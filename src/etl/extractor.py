@@ -214,4 +214,121 @@ class BigQueryExtractor:
         )
         df_pagos = self.client.query(query_pagos).to_dataframe()
         
-        logger.info(f"✅ Datos financieros extraídos:\")\n        logger.info(f\"   💰 Trandeuda: {len(df_deuda):,} registros\")\n        logger.info(f\"   💳 Pagos: {len(df_pagos):,} registros\")\n        \n        return df_deuda, df_pagos\n    \n    def _extraer_fecha_de_archivo(self, nombre_archivo: str) -> Optional[datetime]:\n        \"\"\"Extrae fecha del nombre del archivo con múltiples patrones\"\"\"\n        patrones = [\n            r'(\\d{4})(\\d{2})(\\d{2})',  # YYYYMMDD\n            r'(\\d{2})(\\d{2})(\\d{4})',  # DDMMYYYY\n            r'TRAN_DEUDA_(\\d{2})(\\d{2})',  # TRAN_DEUDA_DDMM\n            r'_(\\d{8})',  # _YYYYMMDD\n        ]\n        \n        for patron in patrones:\n            match = re.search(patron, nombre_archivo)\n            if match:\n                try:\n                    grupos = match.groups()\n                    if len(grupos) == 3:\n                        if len(grupos[0]) == 4:  # YYYY-MM-DD\n                            year, month, day = grupos\n                        else:  # DD-MM-YYYY\n                            day, month, year = grupos\n                        return datetime(int(year), int(month), int(day))\n                    elif len(grupos) == 2:  # DD-MM (asumir año actual)\n                        day, month = grupos\n                        year = datetime.now().year\n                        return datetime(year, int(month), int(day))\n                except ValueError:\n                    continue\n        \n        logger.debug(f\"⚠️ No se pudo extraer fecha de: {nombre_archivo}\")\n        return None\n    \n    def extract_all_data(self) -> Dict[str, pd.DataFrame]:\n        \"\"\"Extrae todos los datos necesarios para el ETL\"\"\"\n        logger.info(\"🚀 Iniciando extracción completa de datos\")\n        \n        data = {}\n        \n        try:\n            # 1. Extraer calendario\n            logger.info(\"📅 Paso 1: Extrayendo calendario...\")\n            data['calendario'] = self.extract_calendario()\n            if data['calendario'].empty:\n                logger.error(\"❌ No se encontraron períodos en el calendario\")\n                return data\n            \n            # 2. Extraer asignaciones\n            logger.info(\"👥 Paso 2: Extrayendo asignaciones...\")\n            archivos_calendario = data['calendario']['ARCHIVO'].tolist()\n            data['asignacion'] = self.extract_asignacion(archivos_calendario)\n            \n            if data['asignacion'].empty:\n                logger.error(\"❌ No se encontraron asignaciones\")\n                return data\n            \n            # 3. Extraer gestiones dentro del período\n            logger.info(\"🎯 Paso 3: Extrayendo gestiones...\")\n            cod_lunas = data['asignacion']['cod_luna'].unique().tolist()\n            fecha_inicio = data['calendario']['FECHA_ASIGNACION'].min()\n            fecha_fin = data['calendario']['FECHA_CIERRE'].max()\n            \n            data['voicebot'], data['mibotair'] = self.extract_gestiones_temporales(\n                cod_lunas, fecha_inicio, fecha_fin\n            )\n            \n            # 4. Extraer datos financieros\n            logger.info(\"💰 Paso 4: Extrayendo datos financieros...\")\n            data['trandeuda'], data['pagos'] = self.extract_financiero_by_fecha_archivo(\n                archivos_calendario\n            )\n            \n            # Resumen final\n            logger.success(\"🎉 Extracción completa finalizada\")\n            total_records = 0\n            for tabla, df in data.items():\n                count = len(df)\n                total_records += count\n                logger.info(f\"   📊 {tabla}: {count:,} registros\")\n            \n            logger.info(f\"📈 Total de registros extraídos: {total_records:,}\")\n            \n            return data\n            \n        except Exception as e:\n            logger.error(f\"💥 Error durante la extracción: {e}\")\n            raise\n    \n    def get_data_summary(self) -> Dict:\n        \"\"\"Obtiene un resumen rápido de los datos disponibles\"\"\"\n        try:\n            # Quick calendar check\n            calendario = self.extract_calendario()\n            \n            if calendario.empty:\n                return {\n                    \"disponible\": False,\n                    \"mensaje\": f\"No hay datos para {self.config.mes_vigencia} - {self.config.estado_vigencia}\"\n                }\n            \n            return {\n                \"disponible\": True,\n                \"periodos_encontrados\": len(calendario),\n                \"archivos\": calendario['ARCHIVO'].tolist(),\n                \"fecha_inicio\": calendario['FECHA_ASIGNACION'].min().strftime('%Y-%m-%d'),\n                \"fecha_fin\": calendario['FECHA_CIERRE'].max().strftime('%Y-%m-%d'),\n                \"dias_gestion\": calendario['DIAS_GESTION'].iloc[0],\n                \"estado\": calendario['ESTADO'].iloc[0]\n            }\n            \n        except Exception as e:\n            return {\n                \"disponible\": False,\n                \"error\": str(e)\n            }
+        logger.info(f"✅ Datos financieros extraídos:")
+        logger.info(f"   💰 Trandeuda: {len(df_deuda):,} registros")
+        logger.info(f"   💳 Pagos: {len(df_pagos):,} registros")
+        
+        return df_deuda, df_pagos
+    
+    def _extraer_fecha_de_archivo(self, nombre_archivo: str) -> Optional[datetime]:
+        """Extrae fecha del nombre del archivo con múltiples patrones"""
+        patrones = [
+            r'(\d{4})(\d{2})(\d{2})',  # YYYYMMDD
+            r'(\d{2})(\d{2})(\d{4})',  # DDMMYYYY
+            r'TRAN_DEUDA_(\d{2})(\d{2})',  # TRAN_DEUDA_DDMM
+            r'_(\d{8})',  # _YYYYMMDD
+        ]
+        
+        for patron in patrones:
+            match = re.search(patron, nombre_archivo)
+            if match:
+                try:
+                    grupos = match.groups()
+                    if len(grupos) == 3:
+                        if len(grupos[0]) == 4:  # YYYY-MM-DD
+                            year, month, day = grupos
+                        else:  # DD-MM-YYYY
+                            day, month, year = grupos
+                        return datetime(int(year), int(month), int(day))
+                    elif len(grupos) == 2:  # DD-MM (asumir año actual)
+                        day, month = grupos
+                        year = datetime.now().year
+                        return datetime(year, int(month), int(day))
+                except ValueError:
+                    continue
+        
+        logger.debug(f"⚠️ No se pudo extraer fecha de: {nombre_archivo}")
+        return None
+    
+    def extract_all_data(self) -> Dict[str, pd.DataFrame]:
+        """Extrae todos los datos necesarios para el ETL"""
+        logger.info("🚀 Iniciando extracción completa de datos")
+        
+        data = {}
+        
+        try:
+            # 1. Extraer calendario
+            logger.info("📅 Paso 1: Extrayendo calendario...")
+            data['calendario'] = self.extract_calendario()
+            if data['calendario'].empty:
+                logger.error("❌ No se encontraron períodos en el calendario")
+                return data
+            
+            # 2. Extraer asignaciones
+            logger.info("👥 Paso 2: Extrayendo asignaciones...")
+            archivos_calendario = data['calendario']['ARCHIVO'].tolist()
+            data['asignacion'] = self.extract_asignacion(archivos_calendario)
+            
+            if data['asignacion'].empty:
+                logger.error("❌ No se encontraron asignaciones")
+                return data
+            
+            # 3. Extraer gestiones dentro del período
+            logger.info("🎯 Paso 3: Extrayendo gestiones...")
+            cod_lunas = data['asignacion']['cod_luna'].unique().tolist()
+            fecha_inicio = data['calendario']['FECHA_ASIGNACION'].min()
+            fecha_fin = data['calendario']['FECHA_CIERRE'].max()
+            
+            data['voicebot'], data['mibotair'] = self.extract_gestiones_temporales(
+                cod_lunas, fecha_inicio, fecha_fin
+            )
+            
+            # 4. Extraer datos financieros
+            logger.info("💰 Paso 4: Extrayendo datos financieros...")
+            data['trandeuda'], data['pagos'] = self.extract_financiero_by_fecha_archivo(
+                archivos_calendario
+            )
+            
+            # Resumen final
+            logger.success("🎉 Extracción completa finalizada")
+            total_records = 0
+            for tabla, df in data.items():
+                count = len(df)
+                total_records += count
+                logger.info(f"   📊 {tabla}: {count:,} registros")
+            
+            logger.info(f"📈 Total de registros extraídos: {total_records:,}")
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"💥 Error durante la extracción: {e}")
+            raise
+    
+    def get_data_summary(self) -> Dict:
+        """Obtiene un resumen rápido de los datos disponibles"""
+        try:
+            # Quick calendar check
+            calendario = self.extract_calendario()
+            
+            if calendario.empty:
+                return {
+                    "disponible": False,
+                    "mensaje": f"No hay datos para {self.config.mes_vigencia} - {self.config.estado_vigencia}"
+                }
+            
+            return {
+                "disponible": True,
+                "periodos_encontrados": len(calendario),
+                "archivos": calendario['ARCHIVO'].tolist(),
+                "fecha_inicio": calendario['FECHA_ASIGNACION'].min().strftime('%Y-%m-%d'),
+                "fecha_fin": calendario['FECHA_CIERRE'].max().strftime('%Y-%m-%d'),
+                "dias_gestion": calendario['DIAS_GESTION'].iloc[0],
+                "estado": calendario['ESTADO'].iloc[0]
+            }
+            
+        except Exception as e:
+            return {
+                "disponible": False,
+                "error": str(e)
+            }
