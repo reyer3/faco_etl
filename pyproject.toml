@@ -36,6 +36,7 @@ dependencies = [
     "pydantic>=2.5.0",
     "pyarrow>=14.0.0",
     "pathlib>=1.0.1",
+    "db-dtypes>=1.4.3",
 ]
 
 [project.optional-dependencies]
