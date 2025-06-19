@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  etl:
+    build:
+      context: .
+      target: base
+    container_name: faco_etl
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - BIGQUERY_DATASET=${BIGQUERY_DATASET}
+      - COUNTRY_CODE=${COUNTRY_CODE:-PE}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./logs:/app/logs
+    command: >
+      python main.py 
+        --mes ${MES_VIGENCIA:-2025-06} 
+        --estado ${ESTADO_VIGENCIA:-abierto}
+    restart: "no"
+
+  dev:
+    build:
+      context: .
+      target: dev
+    container_name: faco_etl_dev
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - BIGQUERY_DATASET=${BIGQUERY_DATASET}
+      - COUNTRY_CODE=${COUNTRY_CODE:-PE}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./src:/app/src
+      - ./main.py:/app/main.py
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./tests:/app/tests
+    ports:
+      - "8888:8888"  # For Jupyter if needed
+    stdin_open: true
+    tty: true
+
+  shell:
+    build:
+      context: .
+      target: dev
+    container_name: faco_etl_shell
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - BIGQUERY_DATASET=${BIGQUERY_DATASET}
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./src:/app/src
+      - ./logs:/app/logs
+    command: /bin/bash
+    stdin_open: true
+    tty: true
