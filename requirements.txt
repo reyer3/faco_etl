@@ -1,21 +1,21 @@
-# Core dependencies - Keep it minimal (KISS principle)
-google-cloud-bigquery==3.11.4
-pandas==2.0.3
-numpy==1.24.3
+# Core dependencies - Updated for Python 3.13 compatibility
+google-cloud-bigquery>=3.15.0
+pandas>=2.1.4
+numpy>=1.26.0
 
 # Date handling
-pandas-datareader==0.10.0
-holidays==0.29
+holidays>=0.36
+python-dateutil>=2.8.2
 
 # Configuration
-python-dotenv==1.0.0
-click==8.1.6
+python-dotenv>=1.0.0
+click>=8.1.6
 
 # Logging
-loguru==0.7.0
+loguru>=0.7.2
 
 # Data validation
-pydantic==2.1.1
+pydantic>=2.5.0
 
 # Performance
-pyarrow==12.0.1
+pyarrow>=14.0.0
