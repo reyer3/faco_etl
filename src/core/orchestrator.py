@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Dict
 from loguru import logger
+import sys
+from pathlib import Path
 
 from .config import ETLConfig
 
@@ -40,12 +42,18 @@ class ETLOrchestrator:
     def _initialize_components(self) -> bool:
         """Try to initialize real ETL components if available"""
         try:
-            # Try to import real ETL modules
+            # Add the parent directory to Python path to allow imports
+            src_path = Path(__file__).parent.parent
+            if str(src_path) not in sys.path:
+                sys.path.insert(0, str(src_path))
+            
+            # Try to import real ETL modules with correct paths
             from etl.extractor import BigQueryExtractor
             from etl.business_days import BusinessDaysProcessor
             from etl.transformer import CobranzaTransformer
             from etl.loader import BigQueryLoader
             
+            # Initialize components
             self._extractor = BigQueryExtractor(self.config)
             self._business_days = BusinessDaysProcessor(self.config)
             self._transformer = CobranzaTransformer(self.config, self._business_days)
@@ -59,8 +67,10 @@ class ETLOrchestrator:
             logger.debug(f"   Detalle: {e}")
             return False
         except Exception as e:
-            logger.error(f"💥 Error fatal en el pipeline ETL. Proceso abortado.")
-            raise
+            logger.error(f"💥 Error al inicializar componentes ETL: {e}")
+            # Don't raise here, fall back to mock mode
+            logger.warning("⚠️  Cayendo a modo mock debido a error de inicialización")
+            return False
         
     def run(self) -> ETLResult:
         """Run the complete ETL pipeline"""
@@ -118,9 +128,14 @@ class ETLOrchestrator:
             transform_summary = {table: len(df) for table, df in transformed_data.items()}
             logger.info(f"✅ Transformación completada: {transform_summary}")
             
-            # Step 4: Load data
-            logger.info("💾 Paso 4: Cargando datos a BigQuery")
-            load_results = self._loader.load_all_tables(transformed_data)
+            # Step 4: Load data (skip if dry run)
+            if not self.config.dry_run:
+                logger.info("💾 Paso 4: Cargando datos a BigQuery")
+                load_results = self._loader.load_all_tables(transformed_data)
+                output_tables = list(load_results.keys())
+            else:
+                logger.info("🏃‍♂️ Paso 4: Simulando carga (modo DRY-RUN)")
+                output_tables = list(self.config.output_tables.values())
             
             # Calculate metrics
             execution_time = str(datetime.now() - start_time)
@@ -130,7 +145,7 @@ class ETLOrchestrator:
                 success=True,
                 records_processed=total_records,
                 execution_time=execution_time,
-                output_tables=list(load_results.keys())
+                output_tables=output_tables
             )
             
         except Exception as e:
@@ -165,24 +180,24 @@ class ETLOrchestrator:
         
         # Simulate processing steps with realistic timing
         steps = [
-            ("📥 Extrayendo datos del calendario", 1.2),
-            ("🔄 Procesando dimensiones de asignación", 1.5), 
-            ("🤖 Agregando métricas de gestión BOT", 2.1),
-            ("👨‍💼 Agregando métricas de gestión HUMANA", 2.3),
-            ("📊 Calculando KPIs y métricas comparativas", 1.8),
-            ("📅 Procesando días hábiles", 0.7),
-            ("🔍 Validando calidad de datos", 1.1)
+            ("📥 Extrayendo datos del calendario", 0.5),
+            ("🔄 Procesando dimensiones de asignación", 0.7), 
+            ("🤖 Agregando métricas de gestión BOT", 0.9),
+            ("👨‍💼 Agregando métricas de gestión HUMANA", 1.1),
+            ("📊 Calculando KPIs y métricas comparativas", 0.8),
+            ("📅 Procesando días hábiles", 0.3),
+            ("🔍 Validando calidad de datos", 0.5)
         ]
         
         for step_desc, duration in steps:
             logger.info(f"{step_desc}...")
-            time.sleep(duration * 0.5)  # Reduced time for demo
-            logger.info(f"   ✅ {step_desc.split(' ', 1)[1]} completado")
+            time.sleep(duration)
+            logger.info(f"   ✅ Completado")
         
         if not self.config.dry_run:
-            logger.info("💾 Cargando tablas agregadas a BigQuery...")
-            time.sleep(1.0)
-            logger.info("   ✅ Carga completada")
+            logger.info("💾 Simulando carga a BigQuery...")
+            time.sleep(0.5)
+            logger.info("   ✅ Carga simulada completada")
         else:
             logger.info("🏃‍♂️ Simulación de carga (modo DRY-RUN)")
         
@@ -199,9 +214,10 @@ class ETLOrchestrator:
         results = {}
         
         # Check if real components can be initialized
-        results["real_components_available"] = self._initialize_components()
+        components_available = self._initialize_components()
+        results["real_components_available"] = components_available
         
-        if results["real_components_available"]:
+        if components_available:
             # Test real connectivity
             try:
                 results["bigquery"] = self._extractor.test_connectivity()
@@ -229,10 +245,16 @@ class ETLOrchestrator:
     
     def get_processing_summary(self) -> Dict:
         """Get summary of what will be processed"""
+        components_available = False
+        try:
+            components_available = self._initialize_components()
+        except Exception:
+            pass
+            
         summary = {
             "mes_vigencia": self.config.mes_vigencia,
             "estado_vigencia": self.config.estado_vigencia,
-            "modo": "MOCK" if not self._initialize_components() else "REAL",
+            "modo": "REAL" if components_available else "MOCK",
             "configuracion": {
                 "project_id": self.config.project_id,
                 "dataset_id": self.config.dataset_id,
