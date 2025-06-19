@@ -1,15 +1,16 @@
 """
 BigQuery Loader for FACO ETL
 
-Handles optimized loading of transformed data to BigQuery with
-table optimization for Looker Studio performance.
+Handles optimized loading of transformed data to BigQuery.
+Supports granular, append-only loading for resilient, file-by-file processing.
 """
 
 import pandas as pd
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
+
 from google.cloud import bigquery
-from google.cloud.bigquery import SchemaField, TimePartitioning
+from google.cloud.bigquery import TimePartitioning
 from loguru import logger
 
 from core.config import ETLConfig
@@ -17,7 +18,7 @@ from core.config import ETLConfig
 
 class BigQueryLoader:
     """Load transformed data to BigQuery with optimization for Looker Studio"""
-    
+
     def __init__(self, config: ETLConfig):
         self.config = config
         self.client = bigquery.Client(
@@ -25,32 +26,139 @@ class BigQueryLoader:
             credentials=config.credentials_object
         )
         self.dataset = f"{config.project_id}.{config.dataset_id}"
-        
-        # Table schemas and optimization settings
+
+        # Centralized configuration for output tables
         self.table_configs = {
             'agregada': {
                 'partition_field': 'FECHA_SERVICIO',
                 'clustering_fields': ['CARTERA', 'CANAL', 'OPERADOR'],
-                'description': 'Tabla principal agregada para dashboards de Looker Studio con métricas de gestión de cobranza'
+                'description': 'Tabla principal agregada con métricas de gestión de cobranza.'
             },
             'comparativas': {
                 'partition_field': 'fecha_actual',
                 'clustering_fields': ['CARTERA', 'CANAL'],
-                'description': 'Comparativas período-sobre-período usando mismo día hábil'
+                'description': 'Comparativas período-sobre-período usando mismo día hábil.'
             },
             'primera_vez': {
                 'partition_field': 'FECHA_SERVICIO',
                 'clustering_fields': ['CARTERA', 'CANAL', 'cliente'],
-                'description': 'Tracking de primera interacción por cliente y dimensión'
+                'description': 'Tracking de primera interacción por cliente y dimensión.'
             },
             'base_cartera': {
                 'partition_field': 'FECHA_ASIGNACION',
                 'clustering_fields': ['CARTERA', 'MOVIL_FIJA'],
-                'description': 'Métricas base de cartera sin gestiones para análisis de cobertura'
+                'description': 'Métricas base de cartera sin gestiones para análisis de cobertura.'
             }
         }
-        
+
         logger.info(f"💾 BigQuery Loader inicializado - Dataset: {self.dataset}")
+
+    def clear_tables_for_month(self):
+        """
+        Deletes data for the current processing month from target tables.
+        This is a critical step to ensure idempotency when using APPEND mode.
+        """
+        if self.config.dry_run:
+            logger.warning("DRY-RUN: Se omitiría la limpieza de tablas para el mes actual.")
+            return
+
+        logger.warning(f"🧹 Limpiando datos del mes {self.config.mes_vigencia} de las tablas de destino para evitar duplicados...")
+
+        month_start_date = f"{self.config.mes_vigencia}-01"
+
+        for table_key, config in self.table_configs.items():
+            table_name = self.config.output_tables.get(table_key)
+            if not table_name:
+                continue
+
+            full_table_id = f"{self.dataset}.{table_name}"
+            partition_field = config.get('partition_field')
+
+            if not partition_field:
+                logger.warning(f"  - 🟡 Tabla '{table_name}' no está particionada. No se puede limpiar por mes.")
+                continue
+
+            delete_query = f"""
+            DELETE FROM `{full_table_id}`
+            WHERE DATE_TRUNC({partition_field}, MONTH) = DATE('{month_start_date}')
+            """
+
+            try:
+                # We need to be sure the table exists before deleting from it.
+                self.client.get_table(full_table_id)
+                self.client.query(delete_query).result()
+                logger.info(f"  - ✅ Datos de '{table_name}' para el mes {self.config.mes_vigencia} eliminados.")
+            except Exception as e:
+                # It's okay if the table doesn't exist yet, it will be created on the first load.
+                if "Not found" in str(e):
+                    logger.info(f"  - 🔵 Tabla '{table_name}' no existe todavía, no se necesita limpieza.")
+                else:
+                    logger.error(f"  - ❌ No se pudo limpiar la tabla '{table_name}': {e}")
+                    # This could be a critical failure, so we re-raise it.
+                    raise
+
+    def load_dataframe_to_table(self, df: pd.DataFrame, table_name: str, write_disposition: str) -> Dict[str, Any]:
+        """
+        Loads a DataFrame to a BigQuery table, creating and configuring it on the fly.
+        """
+        if df.empty:
+            return {'status': 'SKIPPED', 'rows_written': 0}
+
+        full_table_name = self.config.output_tables[table_name]
+        table_id = f"{self.dataset}.{full_table_name}"
+
+        logger.info(f"  -> Cargando {len(df):,} registros a {table_id} (Modo: {write_disposition})")
+
+        table_config_data = self.table_configs.get(table_name, {})
+        job_config = bigquery.LoadJobConfig(
+            autodetect=True,
+            write_disposition=write_disposition,
+            create_disposition="CREATE_IF_NEEDED",
+        )
+
+        # Configure partitioning and clustering
+        partition_field = table_config_data.get('partition_field')
+        if partition_field and partition_field in df.columns:
+            job_config.time_partitioning = TimePartitioning(type_=bigquery.TimePartitioningType.DAY, field=partition_field)
+
+        clustering_fields = table_config_data.get('clustering_fields', [])
+        available_clustering_fields = [field for field in clustering_fields if field in df.columns]
+        if available_clustering_fields:
+            job_config.clustering_fields = available_clustering_fields
+
+        if self.config.dry_run:
+            logger.info(f"    DRY-RUN: Simularía carga a {table_id}")
+            return {'status': 'DRY_RUN', 'rows_written': len(df)}
+
+        try:
+            job = self.client.load_table_from_dataframe(df, table_id, job_config=job_config)
+            job.result()
+
+            # Update description after table is created/updated
+            table = self.client.get_table(table_id)
+            if not table.description:
+                 table.description = table_config_data.get('description')
+                 self.client.update_table(table, ["description"])
+
+            return {'status': 'SUCCESS', 'rows_written': job.output_rows}
+
+        except Exception as e:
+            logger.error(f"    ❌ Error cargando datos a {table_id}: {e}")
+            return {'status': 'ERROR', 'rows_written': 0, 'error': str(e)}
+
+    def load_all_tables(self, transformed_data: Dict[str, pd.DataFrame], write_disposition: str) -> Dict[str, Dict[str, Any]]:
+        """
+        Loads a dictionary of DataFrames to their respective BigQuery tables.
+        This is called iteratively by the granular orchestrator.
+        """
+        load_results = {}
+        for table_name, df in transformed_data.items():
+            if table_name not in self.config.output_tables:
+                continue
+
+            load_results[table_name] = self.load_dataframe_to_table(df, table_name, write_disposition)
+
+        return load_results
     
     def validate_data_quality(self, data_dict: Dict[str, pd.DataFrame]) -> Dict[str, Dict]:
         """

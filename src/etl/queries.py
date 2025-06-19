@@ -1,4 +1,3 @@
-# src/etl/queries.py
 """
 Central repository for BigQuery SQL queries used in the FACO ETL.
 Usa parámetros de consulta (@param) para seguridad y rendimiento.
@@ -58,11 +57,11 @@ QUERIES = {
         FROM `{dataset}.batch_P3fV4dWNeMkN5RJMhV8e_tran_deuda` AS t1
         JOIN UNNEST(@archivos) AS archivo_param ON t1.archivo = archivo_param
     """,
-    'get_pagos_data': """
+    'get_pagos_by_nro_documento': """
         SELECT
             cod_sistema, nro_documento, monto_cancelado,
             fecha_pago, archivo
-        FROM `{dataset}.batch_P3fV4dWNeMkN5RJMhV8e_pagos`
-        WHERE DATE_TRUNC(fecha_pago, MONTH) = DATE(@mes_vigencia)
+        FROM `{dataset}.batch_P3fV4dWNeMkN5RJMhV8e_pagos` AS t1
+        JOIN UNNEST(@nros_documento) AS doc_param ON t1.nro_documento = doc_param
     """
 }

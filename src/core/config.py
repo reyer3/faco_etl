@@ -54,37 +54,29 @@ class ETLConfig:
     # --- Runtime Flags ---
     dry_run: bool = False
 
-    # --- Dynamically set paths and objects. `init=False` means they are not set in the constructor. ---
+    # --- Dynamically set paths and objects ---
     credentials_path: Optional[str] = field(init=False)
     log_file: str = field(init=False)
-    # repr=False prevents the large credentials object from being printed in logs.
     credentials_object: Optional[Credentials] = field(init=False, repr=False)
 
     def __post_init__(self):
-        """
-        Initializes paths and credentials object after the main object is created.
-        This is the core of the configuration setup.
-        """
-        # --- 1. Find and Load Credentials ---
+        """Initializes paths and credentials object after the main object is created."""
+
+        # 1. Find and Load Credentials
         self.credentials_path = self._find_credentials_path()
-        self.credentials_object = None # Default to None
+        self.credentials_object = None
 
         if self.credentials_path and os.path.exists(self.credentials_path):
             try:
-                # This is the crucial step: load the file into the object.
                 self.credentials_object = service_account.Credentials.from_service_account_file(self.credentials_path)
                 logger.trace(f"🔑 Credenciales cargadas exitosamente desde: {self.credentials_path}")
             except Exception as e:
                 logger.error(f"❌ Falló la carga del archivo de credenciales JSON desde '{self.credentials_path}': {e}")
-                # Stop execution if the credential file is found but invalid.
                 raise
         else:
-            # If no file is found, rely on Application Default Credentials (ADC).
-            # This is normal for managed GCP environments (Cloud Run, GCE, etc.)
-            # or local dev with `gcloud auth application-default login`.
             logger.info("🔑 No se encontró un archivo de credenciales explícito. Se usará la autenticación de entorno (ADC).")
 
-        # --- 2. Resolve Log File Path ---
+        # 2. Resolve Log File Path
         env_log_file = os.getenv("LOG_FILE")
         if env_log_file:
             self.log_file = env_log_file
@@ -100,12 +92,10 @@ class ETLConfig:
 
     def _find_credentials_path(self) -> Optional[str]:
         """Finds a valid Google Cloud credentials file from multiple standard locations."""
-        # Priority 1: GOOGLE_APPLICATION_CREDENTIALS environment variable
         env_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if env_path and os.path.exists(env_path):
             return env_path
 
-        # Priority 2: Local project 'credentials' directory
         project_root = Path(__file__).resolve().parent.parent.parent
         local_options = [
             project_root / "credentials" / "key.json",
@@ -115,12 +105,11 @@ class ETLConfig:
             if option.exists():
                 return str(option)
 
-        # Priority 3: Default gcloud config location
         gcloud_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
         if gcloud_path.exists():
             return str(gcloud_path)
 
-        return None # Return None if no file is found
+        return None
 
     @property
     def output_tables(self) -> Dict[str, str]:
@@ -137,9 +126,6 @@ class ETLConfig:
         if not self.project_id:
             raise ValueError("GOOGLE_CLOUD_PROJECT is required but not set.")
 
-        if not self.dataset_id:
-            raise ValueError("BIGQUERY_DATASET is required but not set.")
-
         try:
             year, month = map(int, self.mes_vigencia.split("-"))
             if not (1900 < year < 3000 and 1 <= month <= 12):
@@ -149,14 +135,11 @@ class ETLConfig:
 
         logger.trace("Configuration validated successfully.")
 
-
 def get_config(**overrides) -> ETLConfig:
     """Factory function to get a validated configuration instance."""
     config = ETLConfig()
-
     for key, value in overrides.items():
         if hasattr(config, key) and value is not None:
             setattr(config, key, value)
-
     config.validate()
     return config

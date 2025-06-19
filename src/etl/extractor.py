@@ -23,36 +23,27 @@ class BigQueryExtractor:
 
     def __init__(self, config: ETLConfig):
         self.config = config
-        self.client = self._initialize_client()
+        self.client = bigquery.Client(
+            project=config.project_id,
+            credentials=config.credentials_object
+        )
         self.dataset_id = f"{config.project_id}.{config.dataset_id}"
         logger.info(f"🔌 BigQuery Extractor inicializado para dataset: {self.dataset_id}")
 
-    def _initialize_client(self) -> bigquery.Client:
-        """Inicializa el cliente de BigQuery pasando las credenciales explícitamente."""
-        try:
-            client = bigquery.Client(
-                project=self.config.project_id,
-                credentials=self.config.credentials_object
-            )
-            logger.info(f"✅ Cliente BigQuery inicializado para proyecto: {self.config.project_id}")
-            return client
-        except Exception as e:
-            logger.error(f"❌ Falló la inicialización del cliente de BigQuery: {e}")
-            raise
-
-    def _execute_query(self, query_template: str, params: List[bigquery.ScalarQueryParameter],
-                       job_id_prefix: str) -> pd.DataFrame:
+    def _execute_query(self, query_template: str, params: List, job_id_prefix: str) -> pd.DataFrame:
         """Ejecuta una consulta parametrizada y maneja los errores."""
         query = query_template.format(dataset=self.dataset_id)
         job_config = bigquery.QueryJobConfig(query_parameters=params)
+        full_job_id_prefix = f"faco_{job_id_prefix}_"
+
         try:
-            df = self.client.query(query, job_config=job_config).to_dataframe()
+            df = self.client.query(query, job_config=job_config, job_id_prefix=full_job_id_prefix).to_dataframe()
             return df
         except GoogleAPICallError as e:
-            logger.error(f"❌ Error en la API de BigQuery [Job Prefix: {job_id_prefix}]: {e.message}")
+            logger.error(f"❌ Error en la API de BigQuery [Job Prefix: {full_job_id_prefix}]: {e.message}")
             raise
         except Exception as e:
-            logger.error(f"❌ Error inesperado ejecutando consulta [Job Prefix: {job_id_prefix}]: {e}")
+            logger.error(f"❌ Error inesperado ejecutando consulta [Job Prefix: {full_job_id_prefix}]: {e}")
             raise
 
     def test_connectivity(self) -> bool:
@@ -76,72 +67,39 @@ class BigQueryExtractor:
         logger.info(f"✅ Calendario extraído: {len(df)} períodos encontrados.")
         return df
 
-    def extract_asignacion(self, archivos_calendario: List[str]) -> pd.DataFrame:
-        """Extrae las asignaciones para los archivos del calendario."""
-        if not archivos_calendario:
-            logger.warning("⚠️ No hay archivos de calendario para procesar, se omite extracción de asignaciones.")
-            return pd.DataFrame()
-
-        archivos_txt = [f"{archivo}.txt" for archivo in archivos_calendario]
-        logger.info(f"👥 Extrayendo asignaciones para {len(archivos_calendario)} archivos.")
-
-        params = [bigquery.ArrayQueryParameter("archivos", "STRING", archivos_txt)]
-        df = self._execute_query(QUERIES['get_asignacion'], params, "asignacion")
-        logger.info(f"✅ Asignaciones extraídas: {len(df):,} registros.")
-        return df
-
-    def _paginated_extraction(self, query_name: str, ids: List[Any], id_type: str, id_key: str,
-                              **extra_params) -> pd.DataFrame:
+    def _paginated_extraction(self, query_name: str, ids: List[Any], id_type: str, id_key: str, **extra_params) -> pd.DataFrame:
         """Extrae datos en lotes para listas largas de IDs."""
         if not ids:
             return pd.DataFrame()
-
         all_dfs = []
         for i in range(0, len(ids), self.config.batch_size):
             batch_ids = ids[i:i + self.config.batch_size]
-            logger.debug(
-                f"  - Procesando lote para '{query_name}' ({i // self.config.batch_size + 1}), {len(batch_ids)} IDs.")
-
+            logger.debug(f"  - Procesando lote para '{query_name}' ({i//self.config.batch_size + 1}), {len(batch_ids)} IDs.")
             params = [bigquery.ArrayQueryParameter(id_key, id_type, batch_ids)]
             for key, value in extra_params.items():
                 params.append(bigquery.ScalarQueryParameter(key, "STRING", value))
-
             df_batch = self._execute_query(QUERIES[query_name], params, f"{query_name}_batch")
             all_dfs.append(df_batch)
-
         return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-    def extract_gestiones_by_period(self, cod_lunas: List[int], fecha_inicio: pd.Timestamp, fecha_fin: pd.Timestamp) -> \
-            Tuple[pd.DataFrame, pd.DataFrame]:
+    def extract_gestiones_by_period(self, cod_lunas: List[int], fecha_inicio: pd.Timestamp, fecha_fin: pd.Timestamp) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Extrae gestiones de BOT y HUMANAS usando paginación."""
         if not cod_lunas:
-            logger.warning("⚠️ No hay cod_lunas para extraer gestiones.")
             return pd.DataFrame(), pd.DataFrame()
-
         params = {
             'fecha_inicio': fecha_inicio.strftime('%Y-%m-%d'),
             'fecha_fin': fecha_fin.strftime('%Y-%m-%d')
         }
-
-        logger.info(
-            f"🤖 Extrayendo gestiones BOT para {len(cod_lunas):,} cod_lunas en lotes de {self.config.batch_size}.")
         df_bot = self._paginated_extraction('get_gestiones_bot', cod_lunas, "INT64", "cod_lunas", **params)
-        logger.info(f"✅ Gestiones BOT extraídas: {len(df_bot):,} interacciones.")
-
-        logger.info(
-            f"👨‍💼 Extrayendo gestiones HUMANAS para {len(cod_lunas):,} cod_lunas en lotes de {self.config.batch_size}.")
         df_humano = self._paginated_extraction('get_gestiones_humano', cod_lunas, "INT64", "cod_lunas", **params)
-        logger.info(f"✅ Gestiones HUMANAS extraídas: {len(df_humano):,} interacciones.")
-
         return df_bot, df_humano
 
     def _extract_date_from_filename(self, filename: str) -> Optional[datetime]:
-        """Extrae la fecha de un nombre de archivo, infiriendo el año del período en curso."""
+        """Extrae la fecha de un nombre de archivo."""
         target_year = int(self.config.mes_vigencia.split('-')[0])
         patterns = [
             (r'(\d{4})(\d{2})(\d{2})', lambda m: datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))),
             (r'TRAN_DEUDA_(\d{2})(\d{2})', lambda m: datetime(target_year, int(m.group(2)), int(m.group(1)))),
-            (r'_(\d{2})(\d{2})_', lambda m: datetime(target_year, int(m.group(2)), int(m.group(1)))),
             (r'(\d{2})(\d{2})(\d{4})', lambda m: datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))),
         ]
         for pattern, date_parser in patterns:
@@ -153,75 +111,61 @@ class BigQueryExtractor:
                     continue
         return None
 
-    def extract_financial_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Extrae datos financieros (deuda y pagos) para el período."""
-        logger.info(f"💰 Extrayendo datos financieros para el período {self.config.mes_vigencia}")
+    def extract_contexto_deuda(self, fechas_trandeuda_unicas: List[pd.Timestamp]) -> pd.DataFrame:
+        """Extrae toda la trandeuda relevante para un conjunto de fechas."""
+        logger.info(f"💰 Extrayendo contexto de deuda para {len(fechas_trandeuda_unicas)} fecha(s) única(s)...")
+        all_trandeuda_files_df = self._execute_query(QUERIES['get_all_trandeuda_files'], [], "list_trandeuda_all")
 
-        # Extraer Trandeuda
-        all_trandeuda_files_df = self._execute_query(QUERIES['get_all_trandeuda_files'], [], "list_trandeuda")
+        fechas_set = {f.date() for f in fechas_trandeuda_unicas}
         valid_files = [
             fn for fn in all_trandeuda_files_df['archivo']
-            if (date := self._extract_date_from_filename(fn))
-               and date.year == int(self.config.mes_vigencia.split('-')[0])
-               and date.month == int(self.config.mes_vigencia.split('-')[1])
+            if (date := self._extract_date_from_filename(fn)) and date.date() in fechas_set
         ]
-        if valid_files:
-            logger.info(f"📄 Archivos Trandeuda válidos encontrados: {len(valid_files)}")
-            df_deuda = self._paginated_extraction('get_trandeuda_data', valid_files, "STRING", "archivos")
-            logger.info(f"✅ Trandeuda extraída: {len(df_deuda):,} registros.")
-        else:
-            df_deuda = pd.DataFrame()
-            logger.warning("⚠️ No se encontraron archivos de trandeuda válidos para el período.")
 
-        # Extraer Pagos
-        params = [bigquery.ScalarQueryParameter("mes_vigencia", "STRING", f"{self.config.mes_vigencia}-01")]
-        df_pagos = self._execute_query(QUERIES['get_pagos_data'], params, "pagos")
-        logger.info(f"✅ Pagos extraídos: {len(df_pagos):,} registros.")
+        if not valid_files:
+            logger.warning("⚠️ No se encontraron archivos de Trandeuda para las fechas del calendario.")
+            return pd.DataFrame()
 
-        return df_deuda, df_pagos
+        logger.info(f"  -> {len(valid_files)} archivos de Trandeuda encontrados. Extrayendo datos...")
+        df_deuda = self._paginated_extraction('get_trandeuda_data', valid_files, "STRING", "archivos")
+        logger.info(f"  -> ✅ Deuda total extraída: {len(df_deuda):,} registros.")
+        return df_deuda
 
-    def extract_all_data(self) -> Dict[str, pd.DataFrame]:
-        """Orquesta la extracción completa de datos, asegurando la lógica temporal."""
-        logger.info("🚀 Iniciando extracción completa de datos")
+    def extract_contexto_pagos(self, nros_documento: List[str]) -> pd.DataFrame:
+        """Extrae todos los pagos para una lista de números de documento."""
+        if not nros_documento:
+            logger.warning("⚠️ No hay números de documento para buscar pagos.")
+            return pd.DataFrame()
 
-        data = {}
-        # 1. Calendario
-        df_calendario = self.extract_calendario()
-        data['calendario'] = df_calendario
-        if df_calendario.empty:
-            logger.error("Extracción detenida: No se encontraron datos en el calendario para el período.")
-            return data
+        logger.info(f"💳 Extrayendo contexto de pagos para {len(nros_documento):,} documentos...")
+        df_pagos = self._paginated_extraction('get_pagos_by_nro_documento', nros_documento, "STRING", "nros_documento")
+        logger.info(f"  -> ✅ Pagos totales extraídos: {len(df_pagos):,} registros.")
+        return df_pagos
 
-        # 2. Asignación
-        archivos_calendario = df_calendario['ARCHIVO'].unique().tolist()
-        df_asignacion = self.extract_asignacion(archivos_calendario)
+    def extract_data_for_period(self, calendario_periodo: pd.Series) -> Dict[str, pd.DataFrame]:
+        """Extrae solo los datos de asignación y gestión para un período."""
+        archivo = calendario_periodo['ARCHIVO']
+        logger.info(f"▶️  Extrayendo datos de asignación/gestión para: {archivo}")
+
+        data = {'calendario': calendario_periodo.to_frame().T}
+
+        # 1. Asignación
+        archivos_txt = [f"{archivo}.txt"]
+        params = [bigquery.ArrayQueryParameter("archivos", "STRING", archivos_txt)]
+        df_asignacion = self._execute_query(QUERIES['get_asignacion'], params, "asignacion_periodo")
         data['asignacion'] = df_asignacion
-        if df_asignacion.empty:
-            logger.error("Extracción detenida: No se encontraron asignaciones para los archivos del calendario.")
-            return data
 
-        # 3. Gestiones (con manejo de fechas robusto)
-        df_calendario['FECHA_ASIGNACION'] = pd.to_datetime(df_calendario['FECHA_ASIGNACION'])
-        df_calendario['FECHA_CIERRE'] = pd.to_datetime(df_calendario['FECHA_CIERRE'])
+        # 2. Gestiones
+        if not df_asignacion.empty:
+            cod_lunas_unicos = df_asignacion['cod_luna'].unique().tolist()
+            fecha_inicio = pd.to_datetime(calendario_periodo['FECHA_ASIGNACION'])
+            fecha_cierre = pd.to_datetime(calendario_periodo['FECHA_CIERRE'])
+            if pd.isna(fecha_cierre):
+                fecha_cierre = pd.Timestamp.now()
 
-        fecha_inicio = df_calendario['FECHA_ASIGNACION'].min()
-        fecha_fin = df_calendario['FECHA_CIERRE'].max()
+            df_bot, df_humano = self.extract_gestiones_by_period(cod_lunas_unicos, fecha_inicio, fecha_cierre)
+            data['voicebot'], data['mibotair'] = df_bot, df_humano
+        else:
+            data['voicebot'], data['mibotair'] = pd.DataFrame(), pd.DataFrame()
 
-        if pd.isna(fecha_fin):
-            fecha_fin = pd.Timestamp.now()
-            logger.info(f"📅 Período abierto detectado. Usando fecha actual como fin: {fecha_fin.date()}")
-
-        logger.info(f"⏰ Período de gestión válido: {fecha_inicio.date()} a {fecha_fin.date()}")
-
-        cod_lunas_unicos = df_asignacion['cod_luna'].unique().tolist()
-        df_bot, df_humano = self.extract_gestiones_by_period(cod_lunas_unicos, fecha_inicio, fecha_fin)
-        data['voicebot'] = df_bot
-        data['mibotair'] = df_humano
-
-        # 4. Datos Financieros
-        df_deuda, df_pagos = self.extract_financial_data()
-        data['trandeuda'] = df_deuda
-        data['pagos'] = df_pagos
-
-        logger.success("🎉 Extracción completa finalizada.")
         return data
