@@ -8,8 +8,8 @@ QUERIES = {
     'get_calendario': """
         SELECT
             ARCHIVO,
-            COD_LUNA as cant_cod_luna_unique,
-            CUENTA as cant_registros_archivo,
+            cant_cod_luna_unique,
+            cant_registros_archivo,
             FECHA_ASIGNACION,
             FECHA_TRANDEUDA,
             FECHA_CIERRE,
@@ -17,7 +17,7 @@ QUERIES = {
             DIAS_GESTION,
             DIAS_PARA_CIERRE,
             ESTADO
-        FROM `{dataset}.dash_P3fV4dWNeMkN5RJMhV8e_calendario_v3`
+        FROM `{dataset}.dash_P3fV4dWNeMkN5RJMhV8e_calendario_v4`
         WHERE DATE_TRUNC(FECHA_ASIGNACION, MONTH) = DATE('{mes_vigencia}-01')
         AND UPPER(ESTADO) = UPPER('{estado_vigencia}')
         ORDER BY FECHA_ASIGNACION DESC
