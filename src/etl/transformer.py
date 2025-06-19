@@ -1,29 +1,29 @@
 """
 Data Transformer for FACO ETL
 
-Implements business logic for cobranza analytics with dimension aggregation,
-first-time tracking, and business days integration.
+Implements business logic for aggregating cobranza data by specified dimensions
+with differentiation between total actions vs unique clients metrics.
 """
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
-from typing import Dict, List, Tuple, Optional
+from datetime import datetime, date, timedelta
+from typing import Dict, List, Optional, Tuple, Any
 from loguru import logger
 
 from core.config import ETLConfig
-from .business_days import BusinessDaysProcessor
+from etl.business_days import BusinessDaysProcessor
 
 
 class CobranzaTransformer:
-    """Transforms raw data into aggregated business dimensions"""
+    """Transform raw data into aggregated business dimensions"""
     
     def __init__(self, config: ETLConfig, business_days: BusinessDaysProcessor):
         self.config = config
         self.business_days = business_days
         
-        # Business dimension mappings
-        self.dimension_fields = [
+        # Define the aggregation dimensions as specified
+        self.aggregation_dimensions = [
             'FECHA_SERVICIO',
             'CARTERA', 
             'VENCIMIENTO',
@@ -32,443 +32,515 @@ class CobranzaTransformer:
             'FECHA_CIERRE',
             'OBJ_RECUPERO',
             'GRUPO_RESPUESTA',
-            'GLOSA_RESPUESTA', 
+            'GLOSA_RESPUESTA',
             'CANAL',
             'OPERADOR',
             'NIVEL_1',
-            'NIVEL_2',
+            'NIVEL_2', 
             'NIVEL_3',
             'MOVIL_FIJA',
             'TEMPRANA_ALTAS_CUOTA_FRACCION'
         ]
         
-        logger.info(f"🔄 Transformer configurado con {len(self.dimension_fields)} dimensiones")
+        logger.info(f"🔄 Transformer inicializado con {len(self.aggregation_dimensions)} dimensiones de agregación")
     
-    def transform_all_data(self, raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-        """Transform all raw data into business-ready aggregated tables"""
-        logger.info("🔄 Iniciando transformación de datos")
+    def create_base_dimensions(self, df_asignacion: pd.DataFrame, df_calendario: pd.DataFrame) -> pd.DataFrame:
+        """Create base dimensions from assignment and calendar data"""
+        logger.info("📋 Creando dimensiones base")
         
-        transformed_data = {}
-        
-        # 1. Create base dimensions
-        base_dimensions = self._create_base_dimensions(
-            raw_data['asignacion'], 
-            raw_data['calendario']
-        )
-        logger.info(f"✅ Dimensiones base creadas: {len(base_dimensions)} registros")
-        
-        # 2. Process and aggregate gestiones
-        df_gestiones_agregadas = self._process_gestiones(
-            base_dimensions,
-            raw_data['voicebot'],
-            raw_data['mibotair']
-        )
-        logger.info(f"✅ Gestiones agregadas: {len(df_gestiones_agregadas)} registros")
-        
-        # 3. Add financial metrics
-        df_with_financial = self._add_financial_metrics(
-            df_gestiones_agregadas,
-            raw_data['trandeuda'],
-            raw_data['pagos'],
-            base_dimensions
-        )
-        logger.info(f"✅ Métricas financieras agregadas")
-        
-        # 4. Calculate business day metrics
-        df_with_business_days = self.business_days.add_business_day_metrics(df_with_financial)
-        logger.info(f"✅ Métricas de días hábiles agregadas")
-        
-        # 5. Create final aggregated table
-        transformed_data['agregada'] = self._finalize_aggregated_table(df_with_business_days)
-        
-        # 6. Create comparative analysis
-        transformed_data['comparativas'] = self._create_comparative_analysis(df_with_business_days)
-        
-        # 7. Create first-time tracking
-        transformed_data['primera_vez'] = self._create_first_time_tracking(
-            base_dimensions, raw_data['voicebot'], raw_data['mibotair']
+        # Merge assignment with calendar data
+        df_base = df_asignacion.merge(
+            df_calendario[['ARCHIVO', 'FECHA_ASIGNACION', 'FECHA_CIERRE', 'FECHA_TRANDEUDA']],
+            left_on='archivo',
+            right_on=df_calendario['ARCHIVO'] + '.txt',
+            how='left'
         )
         
-        # 8. Create base portfolio summary
-        transformed_data['base_cartera'] = self._create_base_portfolio_summary(base_dimensions)
+        # Create derived dimensions
+        df_base['CARTERA'] = df_base['archivo'].apply(self._extract_cartera_type)
+        df_base['MOVIL_FIJA'] = df_base['negocio']
+        df_base['TEMPRANA_ALTAS_CUOTA_FRACCION'] = self._create_management_segment(df_base)
         
-        return transformed_data
+        # Set management period dates
+        df_base['FECHA_INICIO_GESTION'] = df_base['FECHA_ASIGNACION']
+        df_base['VENCIMIENTO'] = df_base['min_vto']
+        
+        # Calculate recovery objective based on business rules
+        df_base['OBJ_RECUPERO'] = df_base['tramo_gestion'].apply(self._calculate_recovery_objective)
+        
+        logger.info(f"✅ Dimensiones base creadas: {len(df_base)} registros")
+        return df_base
     
-    def _create_base_dimensions(self, df_asignacion: pd.DataFrame, df_calendario: pd.DataFrame) -> pd.DataFrame:
-        """Create base dimensions from asignacion and calendario data"""
-        try:
-            if df_asignacion.empty:
-                return pd.DataFrame()
-            
-            # Merge asignacion with calendario
-            df_base = df_asignacion.merge(
-                df_calendario[['ARCHIVO', 'FECHA_ASIGNACION', 'FECHA_CIERRE', 'FECHA_TRANDEUDA', 'DIAS_GESTION']],
-                left_on='archivo',
-                right_on=df_calendario['ARCHIVO'] + '.txt',
-                how='left'
-            )
-            
-            # Create derived dimensions
-            df_base['CARTERA'] = df_base['archivo'].apply(self._extract_cartera_type)
-            df_base['MOVIL_FIJA'] = df_base['negocio']
-            df_base['TEMPRANA_ALTAS_CUOTA_FRACCION'] = df_base.apply(self._create_tramo_dimension, axis=1)
-            df_base['FECHA_INICIO_GESTION'] = df_base['FECHA_ASIGNACION']
-            
-            # Calculate objective recovery rate
-            df_base['OBJ_RECUPERO'] = df_base['tramo_gestion'].apply(self._calculate_recovery_objective)
-            
-            return df_base
-            
-        except Exception as e:
-            logger.error(f"Error creando dimensiones base: {e}")
-            return pd.DataFrame()
-    
-    def _extract_cartera_type(self, archivo: str) -> str:
-        """Extract cartera type from archivo name"""
-        archivo_upper = archivo.upper()
-        if 'TEMPRANA' in archivo_upper:
+    def _extract_cartera_type(self, filename: str) -> str:
+        """Extract portfolio type from filename"""
+        filename_upper = filename.upper()
+        
+        if 'TEMPRANA' in filename_upper:
             return 'TEMPRANA'
-        elif 'CF_ANN' in archivo_upper or 'CUOTA_FIJA' in archivo_upper:
+        elif 'CF_ANN' in filename_upper or 'CUOTA_FIJA' in filename_upper:
             return 'CUOTA_FIJA_ANUAL'
-        elif 'AN_' in archivo_upper or 'ALTAS' in archivo_upper:
+        elif '_AN_' in filename_upper or 'ALTAS_NUEVAS' in filename_upper:
             return 'ALTAS_NUEVAS'
+        elif 'COBRANDING' in filename_upper:
+            return 'COBRANDING'
         else:
             return 'OTRAS'
     
-    def _create_tramo_dimension(self, row) -> str:
-        """Create combined tramo dimension"""
-        tramo = str(row.get('tramo_gestion', ''))
-        fraccionamiento = str(row.get('fraccionamiento', ''))
+    def _create_management_segment(self, df: pd.DataFrame) -> pd.Series:
+        """Create management segment combining tramo_gestion and fraccionamiento"""
+        segments = []
+        for _, row in df.iterrows():
+            segment = row['tramo_gestion']
+            if row.get('fraccionamiento') == 'SI':
+                segment += ' - FRACCIONADO'
+            if row.get('cuota_fracc_act') and pd.notna(row['cuota_fracc_act']):
+                segment += f" - CUOTA_{row['cuota_fracc_act']}"
+            segments.append(segment)
+        return pd.Series(segments, index=df.index)
+    
+    def _calculate_recovery_objective(self, tramo_gestion: str) -> float:
+        """Calculate recovery objective based on management segment"""
+        objectives = {
+            'AL VCTO': 0.15,        # 15% for at maturity
+            'ENTRE 4 Y 15D': 0.25,  # 25% for early collection
+            'TEMPRANA': 0.20,       # 20% for early
+            'TARDIA': 0.30          # 30% for late
+        }
+        return objectives.get(tramo_gestion, 0.20)  # Default 20%
+    
+    def process_gestiones_with_first_time_tracking(self, df_gestiones: pd.DataFrame, 
+                                                  df_base: pd.DataFrame,
+                                                  canal: str) -> pd.DataFrame:
+        """
+        Process management data with first-time tracking per client and dimension combination.
         
-        result = tramo
-        if fraccionamiento == 'SI':
-            result += ' - FRACCIONADO'
+        This is critical for distinguishing between total actions vs unique clients.
+        """
+        if df_gestiones.empty:
+            logger.warning(f"⚠️  No hay gestiones {canal} para procesar")
+            return pd.DataFrame()
+        
+        logger.info(f"🔄 Procesando gestiones {canal} con tracking de primera vez")
+        
+        # Merge with base dimensions
+        df_enriched = df_gestiones.merge(df_base, on='cod_luna', how='inner')
+        
+        if df_enriched.empty:
+            logger.warning(f"⚠️  No hay coincidencias entre gestiones {canal} y asignaciones")
+            return pd.DataFrame()
+        
+        # Add channel-specific columns
+        df_enriched['CANAL'] = canal
+        
+        if canal == 'BOT':
+            df_enriched['OPERADOR'] = 'SISTEMA_BOT'
+            df_enriched['GRUPO_RESPUESTA'] = df_enriched['management']
+            df_enriched['GLOSA_RESPUESTA'] = df_enriched['management']
+            df_enriched['NIVEL_1'] = df_enriched['management']
+            df_enriched['NIVEL_2'] = ''
+            df_enriched['NIVEL_3'] = ''
+            df_enriched['monto_compromiso'] = 0  # Bots don't handle money commitments
+        else:  # HUMANO
+            df_enriched['OPERADOR'] = df_enriched['nombre_agente'].fillna('SIN_AGENTE')
+            df_enriched['GRUPO_RESPUESTA'] = df_enriched['management']
+            df_enriched['GLOSA_RESPUESTA'] = self._create_detailed_response(df_enriched)
+            df_enriched['NIVEL_1'] = df_enriched['n1'].fillna('')
+            df_enriched['NIVEL_2'] = df_enriched['n2'].fillna('')
+            df_enriched['NIVEL_3'] = df_enriched['n3'].fillna('')
+            df_enriched['monto_compromiso'] = df_enriched['monto_compromiso'].fillna(0)
+        
+        # Add service date and business day information
+        df_enriched['FECHA_SERVICIO'] = df_enriched['date'].dt.date
+        df_enriched = self.business_days.add_business_day_columns(df_enriched, 'date')
+        
+        # Mark first-time interactions per client and dimension combination
+        df_enriched = self._mark_first_time_interactions(df_enriched)
+        
+        # Mark first effective contact per client
+        df_enriched = self._mark_first_effective_contact(df_enriched)
+        
+        logger.info(f"✅ Gestiones {canal} procesadas: {len(df_enriched)} interacciones")
+        return df_enriched
+    
+    def _create_detailed_response(self, df: pd.DataFrame) -> pd.Series:
+        """Create detailed response combining n1, n2, n3 levels"""
+        responses = []
+        for _, row in df.iterrows():
+            parts = []
+            for level in ['n1', 'n2', 'n3']:
+                if pd.notna(row.get(level)) and row[level].strip():
+                    parts.append(row[level].strip())
+            responses.append(' - '.join(parts) if parts else row.get('management', ''))
+        return pd.Series(responses, index=df.index)
+    
+    def _mark_first_time_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Mark first-time interactions per client and key dimension combinations"""
+        df = df.sort_values('date').copy()
+        
+        # Key dimension combinations for first-time tracking
+        dimension_combinations = [
+            ['cliente', 'CARTERA', 'CANAL'],
+            ['cliente', 'CARTERA', 'CANAL', 'OPERADOR'],
+            ['cliente', 'CANAL'],
+            ['cliente', 'GRUPO_RESPUESTA'],
+        ]
+        
+        for dims in dimension_combinations:
+            column_name = f"es_primera_vez_{'_'.join(dims).lower()}"
+            df[column_name] = (
+                df.groupby(dims)['date'].transform('min') == df['date']
+            )
+        
+        # General first-time flag (first interaction ever for this client)
+        df['es_primera_vez_cliente'] = (
+            df.groupby('cliente')['date'].transform('min') == df['date']
+        )
+        
+        logger.debug("✅ Flags de primera vez marcados")
+        return df
+    
+    def _mark_first_effective_contact(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Mark first effective contact per client"""
+        effective_contacts = df[
+            df['management'].isin(['CONTACTO_EFECTIVO', 'Contacto_Efectivo'])
+        ].copy()
+        
+        if not effective_contacts.empty:
+            df['es_primer_contacto_efectivo'] = (
+                df.groupby('cliente')['date'].transform(
+                    lambda x: x == x.min() if df.loc[x.index, 'management'].isin(['CONTACTO_EFECTIVO', 'Contacto_Efectivo']).any() else False
+                )
+            )
+        else:
+            df['es_primer_contacto_efectivo'] = False
+        
+        return df
+    
+    def aggregate_by_dimensions(self, df_gestiones_enriched: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aggregate data by the specified business dimensions.
+        
+        Differentiates between:
+        - Total actions (each interaction counts)
+        - Unique clients (each client counts once per dimension combination)
+        """
+        if df_gestiones_enriched.empty:
+            return pd.DataFrame()
+        
+        logger.info(f"📊 Agregando por dimensiones de negocio: {len(df_gestiones_enriched)} registros")
+        
+        # Ensure all required dimensions exist
+        for dim in self.aggregation_dimensions:
+            if dim not in df_gestiones_enriched.columns:
+                logger.warning(f"⚠️  Dimensión faltante: {dim}, agregando valor por defecto")
+                df_gestiones_enriched[dim] = 'NO_DISPONIBLE'
+        
+        # Group by all specified dimensions
+        grouped = df_gestiones_enriched.groupby(self.aggregation_dimensions)
+        
+        # Aggregate metrics
+        aggregated = grouped.agg({
+            # ACTIONS METRICS (each interaction counts)
+            'cod_luna': 'count',  # total_interacciones
+            'duracion': ['sum', 'mean'],  # duracion_total, duracion_promedio
+            
+            # CLIENT METRICS (unique clients)
+            'cliente': 'nunique',  # clientes_unicos_contactados
+            
+            # EFFECTIVENESS METRICS
+            'management': [
+                lambda x: (x.isin(['CONTACTO_EFECTIVO', 'Contacto_Efectivo'])).sum(),  # contactos_efectivos
+                lambda x: (x.str.contains('COMPROMISO|Compromiso', na=False)).sum()  # compromisos_declarados
+            ],
+            
+            # FIRST-TIME METRICS
+            'es_primera_vez_cliente': 'sum',  # primera_vez_contactados
+            'es_primer_contacto_efectivo': 'sum',  # primera_vez_efectivos
+            'es_primera_vez_cliente_cartera_canal': 'sum',  # primera_vez_por_cartera_canal
+            
+            # FINANCIAL METRICS (only for human channel)
+            'monto_compromiso': ['sum', 'count'],  # monto_total, cantidad_compromisos
+            
+            # BUSINESS DAY METRICS
+            'dia_habil_del_mes': 'first',  # business day of month
+            'es_dia_habil': 'first',  # is business day
+            
+        }).reset_index()
+        
+        # Flatten column names
+        aggregated.columns = [
+            '_'.join(col).strip('_') if isinstance(col, tuple) else col 
+            for col in aggregated.columns
+        ]
+        
+        # Rename columns for clarity
+        column_mapping = {
+            'cod_luna_count': 'total_interacciones',
+            'duracion_sum': 'duracion_total_minutos',
+            'duracion_mean': 'duracion_promedio_minutos',
+            'cliente_nunique': 'clientes_unicos_contactados',
+            'management_<lambda_0>': 'contactos_efectivos',
+            'management_<lambda_1>': 'compromisos_declarados',
+            'es_primera_vez_cliente_sum': 'primera_vez_contactados',
+            'es_primer_contacto_efectivo_sum': 'primera_vez_efectivos',
+            'es_primera_vez_cliente_cartera_canal_sum': 'primera_vez_cartera_canal',
+            'monto_compromiso_sum': 'monto_total_comprometido',
+            'monto_compromiso_count': 'cantidad_compromisos',
+            'dia_habil_del_mes_first': 'dia_habil_del_mes',
+            'es_dia_habil_first': 'es_dia_habil'
+        }
+        
+        # Apply column mapping (only for existing columns)
+        for old_name, new_name in column_mapping.items():
+            if old_name in aggregated.columns:
+                aggregated = aggregated.rename(columns={old_name: new_name})
+        
+        # Calculate KPIs
+        aggregated = self._calculate_aggregated_kpis(aggregated)
+        
+        # Add DD/MM/YYYY format
+        aggregated['FECHA_FORMATO'] = pd.to_datetime(aggregated['FECHA_SERVICIO']).dt.strftime('%d/%m/%Y')
+        
+        logger.info(f"✅ Agregación completada: {len(aggregated)} combinaciones de dimensiones")
+        return aggregated
+    
+    def _calculate_aggregated_kpis(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate KPIs for aggregated data"""
+        # Effectiveness ratios
+        df['efectividad_canal'] = np.where(
+            df['total_interacciones'] > 0,
+            df['contactos_efectivos'] / df['total_interacciones'],
+            0
+        )
+        
+        df['tasa_compromiso'] = np.where(
+            df['total_interacciones'] > 0,
+            df['cantidad_compromisos'] / df['total_interacciones'],
+            0
+        )
+        
+        # First-time ratios
+        df['ratio_primera_vez'] = np.where(
+            df['clientes_unicos_contactados'] > 0,
+            df['primera_vez_contactados'] / df['clientes_unicos_contactados'],
+            0
+        )
+        
+        # Productivity metrics
+        df['interacciones_por_cliente'] = np.where(
+            df['clientes_unicos_contactados'] > 0,
+            df['total_interacciones'] / df['clientes_unicos_contactados'],
+            0
+        )
+        
+        # Financial ratios (for human channel)
+        df['monto_promedio_compromiso'] = np.where(
+            df['cantidad_compromisos'] > 0,
+            df['monto_total_comprometido'] / df['cantidad_compromisos'],
+            0
+        )
+        
+        return df
+    
+    def create_period_comparisons(self, df_current: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create period-over-period comparisons using same business day logic.
+        
+        This is critical for the comparative analysis Ricky requested.
+        """
+        if df_current.empty:
+            return pd.DataFrame()
+        
+        logger.info("🔄 Creando comparativas de período usando mismo día hábil")
+        
+        comparisons = []
+        
+        for _, row in df_current.iterrows():
+            current_date = pd.to_datetime(row['FECHA_SERVICIO']).date()
+            
+            # Get same business day from previous month
+            prev_month_date = self.business_days.get_same_business_day_previous_month(current_date)
+            
+            if prev_month_date:
+                comparison_data = row.to_dict()
+                comparison_data.update({
+                    'fecha_actual': current_date,
+                    'fecha_comparacion': prev_month_date,
+                    'puede_comparar': True,
+                    'dia_habil_numero': self.business_days.calculate_business_day_of_month(current_date),
+                })
+                
+                # Get comparison info
+                comparison_info = self.business_days.get_comparison_periods_info(current_date)
+                comparison_data.update(comparison_info)
+                
+                comparisons.append(comparison_data)
+        
+        if comparisons:
+            df_comparisons = pd.DataFrame(comparisons)
+            logger.info(f"✅ Comparativas creadas: {len(df_comparisons)} registros")
+            return df_comparisons
+        else:
+            logger.warning("⚠️  No se pudieron crear comparativas")
+            return pd.DataFrame()
+    
+    def transform_all_data(self, raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """Main transformation method that orchestrates all transformations"""
+        logger.info("🚀 Iniciando transformación completa de datos")
+        
+        if not raw_data or all(df.empty for df in raw_data.values()):
+            logger.error("❌ No hay datos raw para transformar")
+            return {}
+        
+        # Extract DataFrames
+        df_calendario = raw_data.get('calendario', pd.DataFrame())
+        df_asignacion = raw_data.get('asignacion', pd.DataFrame())
+        df_voicebot = raw_data.get('voicebot', pd.DataFrame())
+        df_mibotair = raw_data.get('mibotair', pd.DataFrame())
+        df_trandeuda = raw_data.get('trandeuda', pd.DataFrame())
+        df_pagos = raw_data.get('pagos', pd.DataFrame())
+        
+        # Step 1: Create base dimensions
+        df_base = self.create_base_dimensions(df_asignacion, df_calendario)
+        
+        # Step 2: Process bot gestiones
+        df_bot_enriched = pd.DataFrame()
+        if not df_voicebot.empty:
+            df_bot_enriched = self.process_gestiones_with_first_time_tracking(
+                df_voicebot, df_base, 'BOT'
+            )
+        
+        # Step 3: Process human gestiones
+        df_humano_enriched = pd.DataFrame()
+        if not df_mibotair.empty:
+            df_humano_enriched = self.process_gestiones_with_first_time_tracking(
+                df_mibotair, df_base, 'HUMANO'
+            )
+        
+        # Step 4: Combine all gestiones
+        gestiones_combined = []
+        if not df_bot_enriched.empty:
+            gestiones_combined.append(df_bot_enriched)
+        if not df_humano_enriched.empty:
+            gestiones_combined.append(df_humano_enriched)
+        
+        if gestiones_combined:
+            df_all_gestiones = pd.concat(gestiones_combined, ignore_index=True)
+            logger.info(f"📊 Total gestiones combinadas: {len(df_all_gestiones)}")
+        else:
+            logger.warning("⚠️  No hay gestiones para procesar")
+            return {}
+        
+        # Step 5: Aggregate by dimensions
+        df_agregada = self.aggregate_by_dimensions(df_all_gestiones)
+        
+        # Step 6: Create comparisons
+        df_comparativas = self.create_period_comparisons(df_agregada)
+        
+        # Step 7: Create first-time tracking table
+        df_primera_vez = self._create_first_time_tracking_table(df_all_gestiones)
+        
+        # Step 8: Create base portfolio metrics
+        df_base_cartera = self._create_base_portfolio_metrics(df_base, df_trandeuda, df_pagos)
+        
+        # Prepare result
+        result = {
+            'agregada': df_agregada,
+            'comparativas': df_comparativas,
+            'primera_vez': df_primera_vez,
+            'base_cartera': df_base_cartera
+        }
+        
+        # Log transformation summary
+        logger.success("🎉 Transformación completa finalizada")
+        for table, df in result.items():
+            if not df.empty:
+                logger.info(f"   📋 {table}: {len(df):,} registros, {len(df.columns)} columnas")
+            else:
+                logger.warning(f"   📭 {table}: Tabla vacía")
         
         return result
     
-    def _calculate_recovery_objective(self, tramo_gestion: str) -> float:
-        """Calculate recovery objective based on tramo"""
-        if pd.isna(tramo_gestion):
-            return 0.20
-        
-        tramo_upper = str(tramo_gestion).upper()
-        if 'AL VCTO' in tramo_upper or 'VENCIMIENTO' in tramo_upper:
-            return 0.15  # 15% for al vencimiento
-        elif 'TEMPRANA' in tramo_upper or '4 Y 15' in tramo_upper:
-            return 0.25  # 25% for temprana
-        else:
-            return 0.20  # 20% default
-    
-    def _process_gestiones(self, base_dimensions: pd.DataFrame, 
-                          df_voicebot: pd.DataFrame, df_mibotair: pd.DataFrame) -> pd.DataFrame:
-        """Process and aggregate gestiones by business dimensions"""
-        all_gestiones = []
-        
-        # Process voicebot gestiones
-        if not df_voicebot.empty:
-            df_bot_processed = self._process_bot_gestiones(base_dimensions, df_voicebot)
-            if not df_bot_processed.empty:
-                all_gestiones.append(df_bot_processed)
-        
-        # Process mibotair gestiones
-        if not df_mibotair.empty:
-            df_humano_processed = self._process_humano_gestiones(base_dimensions, df_mibotair)
-            if not df_humano_processed.empty:
-                all_gestiones.append(df_humano_processed)
-        
-        # Combine all gestiones
-        if all_gestiones:
-            df_combined = pd.concat(all_gestiones, ignore_index=True)
-            return self._aggregate_by_dimensions(df_combined)
-        else:
+    def _create_first_time_tracking_table(self, df_gestiones: pd.DataFrame) -> pd.DataFrame:
+        """Create dedicated table for first-time interaction tracking"""
+        if df_gestiones.empty:
             return pd.DataFrame()
-    
-    def _process_bot_gestiones(self, base_dimensions: pd.DataFrame, df_voicebot: pd.DataFrame) -> pd.DataFrame:
-        """Process voicebot gestiones with business dimensions"""
-        try:
-            # Merge with base dimensions
-            df_bot = df_voicebot.merge(
-                base_dimensions[['cod_luna', 'CARTERA', 'MOVIL_FIJA', 'TEMPRANA_ALTAS_CUOTA_FRACCION', 
-                               'FECHA_ASIGNACION', 'FECHA_CIERRE', 'OBJ_RECUPERO', 'cliente', 'cuenta']],
-                on='cod_luna',
-                how='inner'
-            )
-            
-            if df_bot.empty:
-                return pd.DataFrame()
-            
-            # Add bot-specific dimensions
-            df_bot['CANAL'] = 'BOT'
-            df_bot['OPERADOR'] = 'SISTEMA_BOT'
-            df_bot['GRUPO_RESPUESTA'] = df_bot['management']
-            df_bot['GLOSA_RESPUESTA'] = df_bot['management']
-            df_bot['NIVEL_1'] = df_bot['management']
-            df_bot['NIVEL_2'] = ''
-            df_bot['NIVEL_3'] = ''
-            df_bot['FECHA_SERVICIO'] = pd.to_datetime(df_bot['date']).dt.date
-            df_bot['VENCIMIENTO'] = None  # Could be derived from min_vto if available
-            df_bot['FECHA_INICIO_GESTION'] = df_bot['FECHA_ASIGNACION']
-            
-            # Add first-time tracking
-            df_bot = self._add_first_time_tracking(df_bot, ['cliente', 'CARTERA', 'CANAL'])
-            
-            return df_bot
-            
-        except Exception as e:
-            logger.error(f"Error procesando gestiones bot: {e}")
-            return pd.DataFrame()
-    
-    def _process_humano_gestiones(self, base_dimensions: pd.DataFrame, df_mibotair: pd.DataFrame) -> pd.DataFrame:
-        """Process mibotair gestiones with business dimensions"""
-        try:
-            # Merge with base dimensions
-            df_humano = df_mibotair.merge(
-                base_dimensions[['cod_luna', 'CARTERA', 'MOVIL_FIJA', 'TEMPRANA_ALTAS_CUOTA_FRACCION',
-                               'FECHA_ASIGNACION', 'FECHA_CIERRE', 'OBJ_RECUPERO', 'cliente', 'cuenta']],
-                on='cod_luna',
-                how='inner'
-            )
-            
-            if df_humano.empty:
-                return pd.DataFrame()
-            
-            # Add humano-specific dimensions
-            df_humano['CANAL'] = 'HUMANO'
-            df_humano['OPERADOR'] = df_humano['nombre_agente'].fillna('SIN_AGENTE')
-            df_humano['GRUPO_RESPUESTA'] = df_humano['management']
-            df_humano['GLOSA_RESPUESTA'] = df_humano.apply(self._create_glosa_respuesta, axis=1)
-            df_humano['NIVEL_1'] = df_humano['n1'].fillna('')
-            df_humano['NIVEL_2'] = df_humano['n2'].fillna('')
-            df_humano['NIVEL_3'] = df_humano['n3'].fillna('')
-            df_humano['FECHA_SERVICIO'] = pd.to_datetime(df_humano['date']).dt.date
-            df_humano['VENCIMIENTO'] = None
-            df_humano['FECHA_INICIO_GESTION'] = df_humano['FECHA_ASIGNACION']
-            
-            # Add first-time tracking
-            df_humano = self._add_first_time_tracking(df_humano, ['cliente', 'CARTERA', 'CANAL', 'OPERADOR'])
-            
-            return df_humano
-            
-        except Exception as e:
-            logger.error(f"Error procesando gestiones humano: {e}")
-            return pd.DataFrame()
-    
-    def _create_glosa_respuesta(self, row) -> str:
-        """Create comprehensive glosa_respuesta from n1, n2, n3"""
-        components = []
-        for field in ['n1', 'n2', 'n3']:
-            value = row.get(field)
-            if pd.notna(value) and str(value).strip():
-                components.append(str(value).strip())
         
-        return ' - '.join(components) if components else row.get('management', '')
-    
-    def _add_first_time_tracking(self, df: pd.DataFrame, groupby_fields: List[str]) -> pd.DataFrame:
-        """Add first-time tracking flags to gestiones"""
-        try:
-            df = df.sort_values('date')
-            
-            # Mark first interaction per group
-            df['es_primera_vez'] = (
-                df.groupby(groupby_fields)['date'].transform('min') == df['date']
-            )
-            
-            # Mark first effective contact
-            effective_contacts = df[
-                df['management'].str.contains('CONTACTO_EFECTIVO|Contacto_Efectivo', case=False, na=False)
-            ]
-            
-            if not effective_contacts.empty:
-                first_effective = effective_contacts.groupby(groupby_fields)['date'].transform('min')
-                df['es_primer_contacto_efectivo'] = (
-                    df['date'].isin(first_effective) & 
-                    df['management'].str.contains('CONTACTO_EFECTIVO|Contacto_Efectivo', case=False, na=False)
-                )
-            else:
-                df['es_primer_contacto_efectivo'] = False
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error agregando tracking primera vez: {e}")
-            df['es_primera_vez'] = False
-            df['es_primer_contacto_efectivo'] = False
-            return df
-    
-    def _aggregate_by_dimensions(self, df_gestiones: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate gestiones by business dimensions"""
-        try:
-            if df_gestiones.empty:
-                return pd.DataFrame()
-            
-            # Group by all dimension fields
-            groupby_fields = [field for field in self.dimension_fields if field in df_gestiones.columns]
-            
-            # Aggregate metrics
-            agg_dict = {
-                # Action metrics (each interaction counts)
-                'cod_luna': 'count',  # total_interacciones
-                'duracion': ['sum', 'mean'],  # duracion_total, duracion_promedio
-                
-                # Client metrics (unique clients)
-                'cliente': 'nunique',  # clientes_unicos_contactados
-                'cuenta': 'nunique',   # cuentas_unicas_contactadas
-                
-                # First-time metrics
-                'es_primera_vez': 'sum',  # primera_vez_contactados
-                'es_primer_contacto_efectivo': 'sum',  # primera_vez_efectivos
-                
-                # Financial metrics (for humano channel)
-                'monto_compromiso': ['sum', 'count'],  # monto_total, cantidad_compromisos
-            }
-            
-            # Add effectiveness metrics
-            df_gestiones['es_contacto_efectivo'] = df_gestiones['management'].str.contains(
-                'CONTACTO_EFECTIVO|Contacto_Efectivo', case=False, na=False
-            )
-            agg_dict['es_contacto_efectivo'] = 'sum'
-            
-            # Perform aggregation
-            df_agg = df_gestiones.groupby(groupby_fields).agg(agg_dict).reset_index()
-            
-            # Flatten column names
-            df_agg.columns = [
-                col[0] if col[1] == '' else f"{col[0]}_{col[1]}" 
-                for col in df_agg.columns
-            ]
-            
-            # Rename to business-friendly names
-            column_mapping = {
-                'cod_luna_count': 'total_interacciones',
-                'duracion_sum': 'duracion_total_minutos',
-                'duracion_mean': 'duracion_promedio_minutos',
-                'cliente_nunique': 'clientes_unicos_contactados',
-                'cuenta_nunique': 'cuentas_unicas_contactadas',
-                'es_primera_vez_sum': 'primera_vez_contactados',
-                'es_primer_contacto_efectivo_sum': 'primera_vez_efectivos',
-                'es_contacto_efectivo_sum': 'contactos_efectivos',
-                'monto_compromiso_sum': 'monto_total_comprometido',
-                'monto_compromiso_count': 'cantidad_compromisos'
-            }
-            
-            df_agg = df_agg.rename(columns=column_mapping)
-            
-            # Calculate KPIs
-            df_agg = self._calculate_kpis(df_agg)
-            
-            return df_agg
-            
-        except Exception as e:
-            logger.error(f"Error agregando por dimensiones: {e}")
+        # Filter only first-time interactions
+        first_time_df = df_gestiones[df_gestiones['es_primera_vez_cliente'] == True].copy()
+        
+        if first_time_df.empty:
             return pd.DataFrame()
+        
+        # Select relevant columns for tracking
+        tracking_columns = [
+            'cliente', 'FECHA_SERVICIO', 'CARTERA', 'CANAL', 'OPERADOR',
+            'GRUPO_RESPUESTA', 'dia_habil_del_mes', 'es_primer_contacto_efectivo'
+        ]
+        
+        df_tracking = first_time_df[tracking_columns].copy()
+        df_tracking['timestamp_primera_interaccion'] = pd.Timestamp.now()
+        
+        logger.info(f"📝 Tabla de primera vez creada: {len(df_tracking)} clientes únicos")
+        return df_tracking
     
-    def _calculate_kpis(self, df_agg: pd.DataFrame) -> pd.DataFrame:
-        """Calculate business KPIs"""
-        try:
-            # Effectiveness metrics
-            df_agg['efectividad_canal'] = (
-                df_agg['contactos_efectivos'] / df_agg['total_interacciones']
-            ).fillna(0)
-            
-            df_agg['tasa_compromiso'] = (
-                df_agg['cantidad_compromisos'] / df_agg['total_interacciones']
-            ).fillna(0)
-            
-            df_agg['ratio_primera_vez'] = (
-                df_agg['primera_vez_contactados'] / df_agg['clientes_unicos_contactados']
-            ).fillna(0)
-            
-            # Average metrics
-            df_agg['monto_promedio_compromiso'] = (
-                df_agg['monto_total_comprometido'] / df_agg['cantidad_compromisos']
-            ).fillna(0)
-            
-            df_agg['interacciones_por_cliente'] = (
-                df_agg['total_interacciones'] / df_agg['clientes_unicos_contactados']
-            ).fillna(0)
-            
-            return df_agg
-            
-        except Exception as e:
-            logger.error(f"Error calculando KPIs: {e}")
-            return df_agg
-    
-    def _add_financial_metrics(self, df_gestiones: pd.DataFrame, df_trandeuda: pd.DataFrame, 
-                              df_pagos: pd.DataFrame, base_dimensions: pd.DataFrame) -> pd.DataFrame:
-        """Add financial metrics to aggregated data"""
-        try:
-            # This would be implemented to add financial context
-            # For now, return the gestiones data as-is
-            return df_gestiones
-            
-        except Exception as e:
-            logger.error(f"Error agregando métricas financieras: {e}")
-            return df_gestiones
-    
-    def _finalize_aggregated_table(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Finalize the main aggregated table"""
-        try:
-            # Add any final calculations or formatting
-            df = df.copy()
-            
-            # Format dates
-            date_columns = ['FECHA_SERVICIO', 'FECHA_ASIGNACION', 'FECHA_INICIO_GESTION', 'FECHA_CIERRE']
-            for col in date_columns:
-                if col in df.columns:
-                    df[f'{col}_FORMATO'] = pd.to_datetime(df[col]).dt.strftime('%d/%m/%Y')
-            
-            # Round numeric columns
-            numeric_columns = df.select_dtypes(include=[np.number]).columns
-            for col in numeric_columns:
-                if 'ratio' in col.lower() or 'efectividad' in col.lower() or 'tasa' in col.lower():
-                    df[col] = df[col].round(4)
-                elif 'monto' in col.lower():
-                    df[col] = df[col].round(2)
-                elif 'duracion' in col.lower():
-                    df[col] = df[col].round(1)
-            
-            logger.info(f"✅ Tabla agregada finalizada: {len(df)} registros, {len(df.columns)} columnas")
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error finalizando tabla agregada: {e}")
-            return df
-    
-    def _create_comparative_analysis(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create period-over-period comparative analysis"""
-        # Placeholder for comparative analysis
-        # This would implement same business day comparison logic
-        return pd.DataFrame()
-    
-    def _create_first_time_tracking(self, base_dimensions: pd.DataFrame, 
-                                   df_voicebot: pd.DataFrame, df_mibotair: pd.DataFrame) -> pd.DataFrame:
-        """Create detailed first-time tracking table"""
-        # Placeholder for first-time tracking table
-        return pd.DataFrame()
-    
-    def _create_base_portfolio_summary(self, base_dimensions: pd.DataFrame) -> pd.DataFrame:
-        """Create base portfolio summary without gestiones"""
-        try:
-            if base_dimensions.empty:
-                return pd.DataFrame()
-            
-            summary = base_dimensions.groupby([
-                'CARTERA', 'MOVIL_FIJA', 'TEMPRANA_ALTAS_CUOTA_FRACCION', 'FECHA_ASIGNACION'
-            ]).agg({
-                'cod_luna': 'count',
-                'cuenta': 'nunique',
-                'cliente': 'nunique',
-                'OBJ_RECUPERO': 'mean'
+    def _create_base_portfolio_metrics(self, df_base: pd.DataFrame, 
+                                     df_trandeuda: pd.DataFrame, 
+                                     df_pagos: pd.DataFrame) -> pd.DataFrame:
+        """Create base portfolio metrics table"""
+        logger.info("📊 Creando métricas base de cartera")
+        
+        # Aggregate by portfolio dimensions
+        portfolio_dims = ['CARTERA', 'FECHA_ASIGNACION', 'MOVIL_FIJA', 'TEMPRANA_ALTAS_CUOTA_FRACCION']
+        
+        df_portfolio = df_base.groupby(portfolio_dims).agg({
+            'cod_luna': 'count',
+            'cuenta': 'nunique',
+            'cliente': 'nunique'
+        }).reset_index()
+        
+        df_portfolio.columns = portfolio_dims + ['total_cod_lunas', 'cuentas_unicas', 'clientes_unicos']
+        
+        # Add financial metrics if available
+        if not df_trandeuda.empty:
+            # Aggregate debt by account
+            debt_summary = df_trandeuda.groupby('cod_cuenta').agg({
+                'monto_exigible': 'sum'
             }).reset_index()
+            debt_summary['cod_cuenta'] = debt_summary['cod_cuenta'].astype(str)
             
-            summary.columns = [
-                'CARTERA', 'MOVIL_FIJA', 'TEMPRANA_ALTAS_CUOTA_FRACCION', 'FECHA_ASIGNACION',
-                'total_cod_lunas_asignados', 'cuentas_unicas_asignadas', 'clientes_unicos_asignados',
-                'objetivo_recupero_promedio'
-            ]
+            # Merge with base (need to match account format)
+            df_base_str = df_base.copy()
+            df_base_str['cuenta_str'] = df_base_str['cuenta'].astype(str)
             
-            return summary
+            debt_by_portfolio = df_base_str.merge(debt_summary, left_on='cuenta_str', right_on='cod_cuenta', how='left')
+            debt_aggregated = debt_by_portfolio.groupby(portfolio_dims)['monto_exigible'].sum().reset_index()
             
-        except Exception as e:
-            logger.error(f"Error creando resumen base cartera: {e}")
-            return pd.DataFrame()
+            df_portfolio = df_portfolio.merge(debt_aggregated, on=portfolio_dims, how='left')
+            df_portfolio['monto_exigible'] = df_portfolio['monto_exigible'].fillna(0)
+        
+        if not df_pagos.empty:
+            # Similar process for payments
+            payment_summary = df_pagos.groupby('cod_sistema').agg({
+                'monto_cancelado': 'sum'
+            }).reset_index()
+            payment_summary['cod_sistema'] = payment_summary['cod_sistema'].astype(str)
+            
+            df_base_str = df_base.copy()
+            df_base_str['cuenta_str'] = df_base_str['cuenta'].astype(str)
+            
+            payment_by_portfolio = df_base_str.merge(payment_summary, left_on='cuenta_str', right_on='cod_sistema', how='left')
+            payment_aggregated = payment_by_portfolio.groupby(portfolio_dims)['monto_cancelado'].sum().reset_index()
+            
+            df_portfolio = df_portfolio.merge(payment_aggregated, on=portfolio_dims, how='left')
+            df_portfolio['monto_cancelado'] = df_portfolio['monto_cancelado'].fillna(0)
+            
+            # Calculate recovery ratio
+            df_portfolio['ratio_recuperacion'] = np.where(
+                df_portfolio['monto_exigible'] > 0,
+                df_portfolio['monto_cancelado'] / df_portfolio['monto_exigible'],
+                0
+            )
+        
+        logger.info(f"✅ Métricas base de cartera: {len(df_portfolio)} combinaciones")
+        return df_portfolio
