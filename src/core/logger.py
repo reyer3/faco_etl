@@ -26,18 +26,21 @@ def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
     
     # File logging if specified
     if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        logger.add(
-            log_file,
-            level=level,
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            rotation="10 MB",
-            retention="30 days",
-            compression="gz"
-        )
+        try:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            logger.add(
+                log_file,
+                level=level,
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+                rotation="10 MB",
+                retention="30 days",
+                compression="gz"
+            )
+            logger.info(f"📄 Archivo de log: {log_file}")
+        except (PermissionError, OSError) as e:
+            logger.warning(f"⚠️  No se pudo crear archivo de log {log_file}: {e}")
+            logger.info("📝 Continuando solo con logging de consola")
     
     logger.info(f"📝 Logging configurado - Nivel: {level}")
-    if log_file:
-        logger.info(f"📄 Archivo de log: {log_file}")
