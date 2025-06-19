@@ -20,7 +20,10 @@ class BigQueryLoader:
     
     def __init__(self, config: ETLConfig):
         self.config = config
-        self.client = bigquery.Client(project=config.project_id)
+        self.client = bigquery.Client(
+            project=config.project_id,
+            credentials=config.credentials_object
+        )
         self.dataset = f"{config.project_id}.{config.dataset_id}"
         
         # Table schemas and optimization settings

@@ -2,190 +2,161 @@
 Configuration management for FACO ETL
 
 DRY principle: Single source of truth for all configuration.
+This version includes robust, multi-location credential finding and explicit
+credentials object loading for reliable authentication in any environment.
 """
 
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Dict, Optional
 from pathlib import Path
 
+# Importaciones necesarias para la carga de credenciales
+from google.oauth2 import service_account
+from google.auth.credentials import Credentials
+from loguru import logger
 
 def _is_docker_environment() -> bool:
-    """Detect if running inside Docker container"""
+    """Detects if the script is running inside a Docker container."""
     return os.path.exists('/.dockerenv') or os.getenv('DOCKER_ENV') == 'true'
-
-
-def _get_base_path() -> Path:
-    """Get base path depending on environment"""
-    if _is_docker_environment():
-        return Path('/app')
-    else:
-        return Path(__file__).parent.parent.parent  # Go back to project root
-
-
-def _find_credentials_path() -> Optional[str]:
-    """Find Google Cloud credentials with fallback options"""
-    base_path = _get_base_path()
-    
-    # Option 1: Environment variable (highest priority)
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-        cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if os.path.exists(cred_path):
-            return cred_path
-    
-    # Option 2: Local credentials directory
-    local_options = [
-        base_path / "credentials" / "key.json",
-        base_path / "credentials" / "service-account.json",
-        base_path / "credentials" / "gcp-key.json",
-    ]
-    
-    for option in local_options:
-        if option.exists():
-            return str(option)
-    
-    # Option 3: Default Google Cloud locations
-    home_path = Path.home()
-    gcloud_options = [
-        home_path / ".config" / "gcloud" / "application_default_credentials.json",
-        home_path / ".config" / "gcloud" / "legacy_credentials"
-    ]
-    
-    for option in gcloud_options:
-        if option.exists():
-            return str(option)
-    
-    return None
 
 
 @dataclass
 class ETLConfig:
-    """Configuration class with sensible defaults"""
-    
-    # BigQuery
+    """
+    Configuration class with sensible defaults, loaded from environment variables.
+    Handles dynamic path resolution and explicit loading of credentials.
+    """
+
+    # --- BigQuery Configuration ---
     project_id: str = field(default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT", "mibot-222814"))
     dataset_id: str = field(default_factory=lambda: os.getenv("BIGQUERY_DATASET", "BI_USA"))
-    
-    # ETL Parameters
+
+    # --- ETL Parameters ---
     mes_vigencia: str = field(default_factory=lambda: os.getenv("MES_VIGENCIA", "2025-06"))
     estado_vigencia: str = field(default_factory=lambda: os.getenv("ESTADO_VIGENCIA", "abierto"))
-    
-    # Business Logic
+
+    # --- Business Logic ---
     country_code: str = field(default_factory=lambda: os.getenv("COUNTRY_CODE", "PE"))
     include_saturdays: bool = field(default_factory=lambda: os.getenv("INCLUDE_SATURDAYS", "false").lower() == "true")
-    
-    # Output Configuration
+
+    # --- Output Configuration ---
     output_table_prefix: str = field(default_factory=lambda: os.getenv("OUTPUT_TABLE_PREFIX", "dash_cobranza"))
     overwrite_tables: bool = field(default_factory=lambda: os.getenv("OVERWRITE_TABLES", "true").lower() == "true")
-    
-    # Performance
+
+    # --- Performance ---
     batch_size: int = field(default_factory=lambda: int(os.getenv("BATCH_SIZE", "10000")))
     max_workers: int = field(default_factory=lambda: int(os.getenv("MAX_WORKERS", "4")))
-    
-    # Logging
-    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
-    
-    # Runtime flags
+
+    # --- Logging ---
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
+
+    # --- Runtime Flags ---
     dry_run: bool = False
-    
+
+    # --- Dynamically set paths and objects. `init=False` means they are not set in the constructor. ---
+    credentials_path: Optional[str] = field(init=False)
+    log_file: str = field(init=False)
+    # repr=False prevents the large credentials object from being printed in logs.
+    credentials_object: Optional[Credentials] = field(init=False, repr=False)
+
     def __post_init__(self):
-        """Initialize paths after object creation"""
-        base_path = _get_base_path()
-        
-        # Set credentials path with smart detection
-        self.credentials_path = _find_credentials_path()
-        
-        # Set log file path
-        if os.getenv("LOG_FILE"):
-            self.log_file = os.getenv("LOG_FILE")
+        """
+        Initializes paths and credentials object after the main object is created.
+        This is the core of the configuration setup.
+        """
+        # --- 1. Find and Load Credentials ---
+        self.credentials_path = self._find_credentials_path()
+        self.credentials_object = None # Default to None
+
+        if self.credentials_path and os.path.exists(self.credentials_path):
+            try:
+                # This is the crucial step: load the file into the object.
+                self.credentials_object = service_account.Credentials.from_service_account_file(self.credentials_path)
+                logger.trace(f"🔑 Credenciales cargadas exitosamente desde: {self.credentials_path}")
+            except Exception as e:
+                logger.error(f"❌ Falló la carga del archivo de credenciales JSON desde '{self.credentials_path}': {e}")
+                # Stop execution if the credential file is found but invalid.
+                raise
         else:
-            # Use relative path for local, absolute for Docker
+            # If no file is found, rely on Application Default Credentials (ADC).
+            # This is normal for managed GCP environments (Cloud Run, GCE, etc.)
+            # or local dev with `gcloud auth application-default login`.
+            logger.info("🔑 No se encontró un archivo de credenciales explícito. Se usará la autenticación de entorno (ADC).")
+
+        # --- 2. Resolve Log File Path ---
+        env_log_file = os.getenv("LOG_FILE")
+        if env_log_file:
+            self.log_file = env_log_file
+        else:
             if _is_docker_environment():
-                self.log_file = "/app/logs/etl.log"
+                log_dir = Path("/app/logs")
             else:
-                self.log_file = str(base_path / "logs" / "etl.log")
-    
+                project_root = Path(__file__).resolve().parent.parent.parent
+                log_dir = project_root / "logs"
+
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self.log_file = str(log_dir / "etl.log")
+
+    def _find_credentials_path(self) -> Optional[str]:
+        """Finds a valid Google Cloud credentials file from multiple standard locations."""
+        # Priority 1: GOOGLE_APPLICATION_CREDENTIALS environment variable
+        env_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if env_path and os.path.exists(env_path):
+            return env_path
+
+        # Priority 2: Local project 'credentials' directory
+        project_root = Path(__file__).resolve().parent.parent.parent
+        local_options = [
+            project_root / "credentials" / "key.json",
+            project_root / "credentials" / "service-account.json",
+        ]
+        for option in local_options:
+            if option.exists():
+                return str(option)
+
+        # Priority 3: Default gcloud config location
+        gcloud_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+        if gcloud_path.exists():
+            return str(gcloud_path)
+
+        return None # Return None if no file is found
+
     @property
-    def output_tables(self) -> dict:
-        """Output table names"""
+    def output_tables(self) -> Dict[str, str]:
+        """Generates a dictionary of final output table names."""
         return {
             "agregada": f"{self.output_table_prefix}_agregada",
-            "comparativas": f"{self.output_table_prefix}_comparativas", 
+            "comparativas": f"{self.output_table_prefix}_comparativas",
             "primera_vez": f"{self.output_table_prefix}_primera_vez",
             "base_cartera": f"{self.output_table_prefix}_base_cartera"
         }
-    
-    @property
-    def table_clustering_fields(self) -> List[str]:
-        """Fields for BigQuery table clustering optimization"""
-        return ["CARTERA", "CANAL", "OPERADOR"]
-    
-    @property 
-    def table_partition_field(self) -> str:
-        """Field for BigQuery table partitioning"""
-        return "FECHA_SERVICIO"
-    
-    @property
-    def is_local_environment(self) -> bool:
-        """Check if running in local environment"""
-        return not _is_docker_environment()
-    
-    @property
-    def has_credentials(self) -> bool:
-        """Check if valid credentials are available"""
-        return self.credentials_path is not None
-    
-    def get_credentials_help(self) -> str:
-        """Get help message for setting up credentials"""
-        base_path = _get_base_path()
-        
-        return f"""
-🔑 Google Cloud Credentials Setup:
 
-Option 1 (Recommended for local development):
-   gcloud auth application-default login
-
-Option 2 (Service Account Key):
-   1. Create credentials directory: mkdir -p {base_path}/credentials
-   2. Download service account key from Google Cloud Console
-   3. Save as: {base_path}/credentials/key.json
-   4. Set environment: export GOOGLE_APPLICATION_CREDENTIALS={base_path}/credentials/key.json
-
-Option 3 (Environment Variable):
-   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/key.json
-
-Current search locations:
-   • Environment: GOOGLE_APPLICATION_CREDENTIALS
-   • Project: {base_path}/credentials/key.json
-   • Home: ~/.config/gcloud/application_default_credentials.json
-"""
-    
     def validate(self) -> None:
-        """Validate configuration"""
+        """Validates that essential configuration parameters are correctly set."""
         if not self.project_id:
-            raise ValueError("GOOGLE_CLOUD_PROJECT is required")
-        
+            raise ValueError("GOOGLE_CLOUD_PROJECT is required but not set.")
+
         if not self.dataset_id:
-            raise ValueError("BIGQUERY_DATASET is required")
-        
-        # Validate date format
+            raise ValueError("BIGQUERY_DATASET is required but not set.")
+
         try:
-            year, month = self.mes_vigencia.split("-")
-            int(year), int(month)
+            year, month = map(int, self.mes_vigencia.split("-"))
+            if not (1900 < year < 3000 and 1 <= month <= 12):
+                raise ValueError("Invalid year or month.")
         except (ValueError, AttributeError):
-            raise ValueError("mes_vigencia must be in YYYY-MM format")
-        
-        if self.estado_vigencia not in ["abierto", "finalizado"]:
-            raise ValueError("estado_vigencia must be 'abierto' or 'finalizado'")
-        
-        # Validate credentials (only if not dry run)
-        if not self.dry_run and not self.has_credentials:
-            help_msg = self.get_credentials_help()
-            raise ValueError(f"Google Cloud credentials not found.\n{help_msg}")
+            raise ValueError(f"mes_vigencia '{self.mes_vigencia}' is invalid. Must be in YYYY-MM format.")
+
+        logger.trace("Configuration validated successfully.")
 
 
 def get_config(**overrides) -> ETLConfig:
-    """Get configuration with optional overrides"""
-    config = ETLConfig(**overrides)
+    """Factory function to get a validated configuration instance."""
+    config = ETLConfig()
+
+    for key, value in overrides.items():
+        if hasattr(config, key) and value is not None:
+            setattr(config, key, value)
+
     config.validate()
     return config
