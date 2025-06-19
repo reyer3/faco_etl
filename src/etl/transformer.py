@@ -38,8 +38,8 @@ class CobranzaTransformer:
             'NIVEL_1',
             'NIVEL_2', 
             'NIVEL_3',
-            'MOVIL_FIJA',
-            'TEMPRANA_ALTAS_CUOTA_FRACCION'
+            'SERVICIO',
+            'CARTERA'
         ]
         
         logger.info(f"🔄 Transformer inicializado con {len(self.aggregation_dimensions)} dimensiones de agregación")
@@ -58,8 +58,8 @@ class CobranzaTransformer:
         
         # Create derived dimensions
         df_base['CARTERA'] = df_base['archivo'].apply(self._extract_cartera_type)
-        df_base['MOVIL_FIJA'] = df_base['negocio']
-        df_base['TEMPRANA_ALTAS_CUOTA_FRACCION'] = self._create_management_segment(df_base)
+        df_base['SERVICIO'] = df_base['negocio']
+        df_base['CARTERA'] = self._create_management_segment(df_base)
         
         # Set management period dates
         df_base['FECHA_INICIO_GESTION'] = df_base['FECHA_ASIGNACION']
@@ -491,7 +491,7 @@ class CobranzaTransformer:
         logger.info("📊 Creando métricas base de cartera")
         
         # Aggregate by portfolio dimensions
-        portfolio_dims = ['CARTERA', 'FECHA_ASIGNACION', 'MOVIL_FIJA', 'TEMPRANA_ALTAS_CUOTA_FRACCION']
+        portfolio_dims = ['CARTERA', 'FECHA_ASIGNACION', 'SERVICIO', 'CARTERA']
         
         df_portfolio = df_base.groupby(portfolio_dims).agg({
             'cod_luna': 'count',
