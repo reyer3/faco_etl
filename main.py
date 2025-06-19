@@ -58,11 +58,16 @@ def setup_environment():
     help="Solo probar conectividad sin ejecutar ETL"
 )
 @click.option(
+    "--quick-summary",
+    is_flag=True,
+    help="Resumen rápido de datos disponibles (perfecto para presentaciones)"
+)
+@click.option(
     "--setup-help",
     is_flag=True,
     help="Mostrar ayuda para configurar credenciales"
 )
-def main(mes: str, estado: str, dry_run: bool, debug: bool, test_connectivity: bool, setup_help: bool):
+def main(mes: str, estado: str, dry_run: bool, debug: bool, test_connectivity: bool, quick_summary: bool, setup_help: bool):
     """
     FACO ETL - Gestión de Cobranza Analytics
     
@@ -72,6 +77,7 @@ def main(mes: str, estado: str, dry_run: bool, debug: bool, test_connectivity: b
         python main.py --mes 2025-06 --estado abierto
         python main.py --mes 2025-05 --estado finalizado --dry-run
         python main.py --test-connectivity
+        python main.py --quick-summary --mes 2025-06  # Para presentaciones
         python main.py --setup-help
     """
     try:
@@ -126,6 +132,71 @@ def main(mes: str, estado: str, dry_run: bool, debug: bool, test_connectivity: b
             except Exception as e:
                 logger.error(f"❌ Error en test de conectividad: {e}")
                 logger.info("💡 Usa --setup-help para configurar credenciales")
+                return
+        
+        # Resumen rápido para presentaciones
+        if quick_summary:
+            logger.info(f"📊 RESUMEN RÁPIDO para presentación - {mes} ({estado})")
+            try:
+                config = get_config()
+                config.mes_vigencia = mes
+                config.estado_vigencia = estado.lower()
+                
+                # Intentar obtener un resumen rápido de datos
+                from etl.extractor import BigQueryExtractor
+                extractor = BigQueryExtractor(config)
+                
+                logger.info("🔍 Verificando datos disponibles...")
+                data_summary = extractor.get_data_summary()
+                
+                if data_summary["disponible"]:
+                    logger.success("📈 DATOS DISPONIBLES PARA PRESENTACIÓN:")
+                    logger.info("="*50)
+                    logger.info(f"📅 Período: {data_summary['fecha_inicio']} → {data_summary['fecha_fin']}")
+                    logger.info(f"📁 Archivos de cartera: {len(data_summary['archivos'])}")
+                    logger.info(f"⏰ Días de gestión disponibles: {data_summary['dias_gestion']}")
+                    logger.info(f"📊 Estado del período: {data_summary['estado']}")
+                    
+                    # Obtener conteos básicos
+                    logger.info("🔢 Obteniendo métricas de resumen...")
+                    
+                    calendario = extractor.extract_calendario()
+                    if not calendario.empty:
+                        asignaciones = extractor.extract_asignacion(calendario['ARCHIVO'].tolist())
+                        
+                        if not asignaciones.empty:
+                            logger.info(f"👥 Total cuentas asignadas: {len(asignaciones):,}")
+                            logger.info(f"🏢 Cuentas únicas: {asignaciones['cuenta'].nunique():,}")
+                            logger.info(f"📱 Teléfonos únicos: {asignaciones['telefono'].nunique():,}")
+                            
+                            # Distribución por tramo
+                            tramos = asignaciones['tramo_gestion'].value_counts()
+                            logger.info("📊 Distribución por tramo:")
+                            for tramo, count in tramos.items():
+                                pct = (count / len(asignaciones)) * 100
+                                logger.info(f"   • {tramo}: {count:,} ({pct:.1f}%)")
+                            
+                            # Distribución por negocio
+                            negocios = asignaciones['negocio'].value_counts()
+                            logger.info("📊 Distribución por negocio:")
+                            for negocio, count in negocios.items():
+                                pct = (count / len(asignaciones)) * 100
+                                logger.info(f"   • {negocio}: {count:,} ({pct:.1f}%)")
+                    
+                    logger.info("="*50)
+                    logger.success("✅ Datos listos para ETL y dashboards en Looker Studio")
+                    logger.info("💡 Para procesar: python main.py --dry-run")
+                    
+                else:
+                    logger.warning(f"⚠️  {data_summary.get('mensaje', 'No hay datos disponibles')}")
+                    if 'error' in data_summary:
+                        logger.error(f"❌ Error: {data_summary['error']}")
+                
+                return
+                
+            except Exception as e:
+                logger.error(f"❌ Error en resumen rápido: {e}")
+                logger.info("💡 Verifica conectividad con --test-connectivity")
                 return
         
         # Configuración normal para ejecución de ETL
