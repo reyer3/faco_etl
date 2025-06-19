@@ -23,6 +23,41 @@ def _get_base_path() -> Path:
         return Path(__file__).parent.parent.parent  # Go back to project root
 
 
+def _find_credentials_path() -> Optional[str]:
+    """Find Google Cloud credentials with fallback options"""
+    base_path = _get_base_path()
+    
+    # Option 1: Environment variable (highest priority)
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if os.path.exists(cred_path):
+            return cred_path
+    
+    # Option 2: Local credentials directory
+    local_options = [
+        base_path / "credentials" / "key.json",
+        base_path / "credentials" / "service-account.json",
+        base_path / "credentials" / "gcp-key.json",
+    ]
+    
+    for option in local_options:
+        if option.exists():
+            return str(option)
+    
+    # Option 3: Default Google Cloud locations
+    home_path = Path.home()
+    gcloud_options = [
+        home_path / ".config" / "gcloud" / "application_default_credentials.json",
+        home_path / ".config" / "gcloud" / "legacy_credentials"
+    ]
+    
+    for option in gcloud_options:
+        if option.exists():
+            return str(option)
+    
+    return None
+
+
 @dataclass
 class ETLConfig:
     """Configuration class with sensible defaults"""
@@ -57,11 +92,8 @@ class ETLConfig:
         """Initialize paths after object creation"""
         base_path = _get_base_path()
         
-        # Set credentials path
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            self.credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        else:
-            self.credentials_path = str(base_path / "credentials" / "key.json")
+        # Set credentials path with smart detection
+        self.credentials_path = _find_credentials_path()
         
         # Set log file path
         if os.getenv("LOG_FILE"):
@@ -98,6 +130,36 @@ class ETLConfig:
         """Check if running in local environment"""
         return not _is_docker_environment()
     
+    @property
+    def has_credentials(self) -> bool:
+        """Check if valid credentials are available"""
+        return self.credentials_path is not None
+    
+    def get_credentials_help(self) -> str:
+        """Get help message for setting up credentials"""
+        base_path = _get_base_path()
+        
+        return f"""
+🔑 Google Cloud Credentials Setup:
+
+Option 1 (Recommended for local development):
+   gcloud auth application-default login
+
+Option 2 (Service Account Key):
+   1. Create credentials directory: mkdir -p {base_path}/credentials
+   2. Download service account key from Google Cloud Console
+   3. Save as: {base_path}/credentials/key.json
+   4. Set environment: export GOOGLE_APPLICATION_CREDENTIALS={base_path}/credentials/key.json
+
+Option 3 (Environment Variable):
+   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/key.json
+
+Current search locations:
+   • Environment: GOOGLE_APPLICATION_CREDENTIALS
+   • Project: {base_path}/credentials/key.json
+   • Home: ~/.config/gcloud/application_default_credentials.json
+"""
+    
     def validate(self) -> None:
         """Validate configuration"""
         if not self.project_id:
@@ -115,6 +177,11 @@ class ETLConfig:
         
         if self.estado_vigencia not in ["abierto", "finalizado"]:
             raise ValueError("estado_vigencia must be 'abierto' or 'finalizado'")
+        
+        # Validate credentials (only if not dry run)
+        if not self.dry_run and not self.has_credentials:
+            help_msg = self.get_credentials_help()
+            raise ValueError(f"Google Cloud credentials not found.\n{help_msg}")
 
 
 def get_config(**overrides) -> ETLConfig:
