@@ -11,21 +11,53 @@ Transforms BigQuery raw data into Looker Studio ready aggregated tables with:
 
 ## 🏃‍♂️ Quick Start
 
+### Option 1: Local Development
+```bash
+# Clone and setup
+git clone https://github.com/reyer3/faco_etl.git
+cd faco_etl
+
+# Quick setup (creates directories, .env file)
+chmod +x setup_local.sh
+./setup_local.sh
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Test run
+python main.py --dry-run
+```
+
+### Option 2: Docker (Recommended)
 ```bash
 # Clone and run
 git clone https://github.com/reyer3/faco_etl.git
 cd faco_etl
 
-# Run with Docker (recommended)
-docker-compose up etl
+# Setup directories first
+chmod +x setup_local.sh
+./setup_local.sh
 
-# Or run locally
-pip install -r requirements.txt
-python main.py --mes 2025-06 --estado abierto
+# Run with Docker
+docker-compose up etl
 ```
 
-## 🐳 Docker Usage
+## ⚙️ Configuration
 
+### Local Environment
+The setup script creates a `.env` file automatically. Edit it with your settings:
+
+```bash
+# Edit configuration
+nano .env
+
+# Key settings to update:
+GOOGLE_CLOUD_PROJECT=your-project-id
+BIGQUERY_DATASET=your-dataset
+# Add your service account key to credentials/key.json
+```
+
+### Docker Environment
 ```bash
 # Development mode with auto-reload
 docker-compose up dev
@@ -33,28 +65,17 @@ docker-compose up dev
 # Production run
 docker-compose up etl
 
-# Interactive shell
+# Interactive shell for debugging
 docker-compose run --rm shell
 ```
 
-## ⚙️ Configuration
+## 🔧 Local Setup Details
 
-Set environment variables in `.env` file:
-
-```bash
-# BigQuery
-GOOGLE_CLOUD_PROJECT=mibot-222814
-BIGQUERY_DATASET=BI_USA
-GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/key.json
-
-# ETL Settings
-COUNTRY_CODE=PE
-INCLUDE_SATURDAYS=false
-OUTPUT_TABLE_PREFIX=dash_cobranza
-
-# Logging
-LOG_LEVEL=INFO
-```
+The setup script (`./setup_local.sh`) creates:
+- `logs/` directory for log files
+- `credentials/` directory for Google Cloud keys
+- `.env` file from template
+- Placeholder `credentials/key.json` (replace with real key)
 
 ## 📊 Output Tables
 
@@ -69,11 +90,34 @@ LOG_LEVEL=INFO
    (Raw)        (Transform)     (Aggregated)    (Dashboards)
 ```
 
-## 📋 Requirements
+## 🧪 Testing & Validation
 
-- Python 3.9+
-- Google Cloud credentials with BigQuery access
-- Docker (optional but recommended)
+```bash
+# Run validation tests
+./validate.sh
+
+# Python test suite
+python tests/test_validation.py
+
+# Dry run (no BigQuery writes)
+python main.py --dry-run --debug
+```
+
+## 📋 Usage Examples
+
+```bash
+# Basic run for current month
+python main.py --mes 2025-06 --estado abierto
+
+# Process closed period
+python main.py --mes 2025-05 --estado finalizado
+
+# Dry run with debug logging
+python main.py --mes 2025-06 --estado abierto --dry-run --debug
+
+# Docker run with custom parameters
+MES_VIGENCIA=2025-05 ESTADO_VIGENCIA=finalizado docker-compose up etl
+```
 
 ## 🛠️ Development
 
@@ -86,7 +130,38 @@ pytest tests/
 
 # Format code
 black src/
-flake8 src/
+isort src/
+
+# Type checking
+mypy src/
+```
+
+## 🔍 Troubleshooting
+
+### Common Issues:
+
+**Permission denied on `/app` directory:**
+- You're running locally with Docker paths
+- Run `./setup_local.sh` to create proper local structure
+
+**Credentials error:**
+- Ensure `credentials/key.json` exists and has BigQuery permissions
+- Check `GOOGLE_CLOUD_PROJECT` in `.env` file
+
+**Import errors:**
+- Install dependencies: `pip install -r requirements.txt`
+- Activate virtual environment if using one
+
+**Date format error:**
+- Use YYYY-MM format for `--mes` parameter (e.g., `2025-06`)
+
+### Debug Mode:
+```bash
+# Enable detailed logging
+python main.py --debug --dry-run
+
+# Check configuration
+python -c "from src.core.config import get_config; print(get_config().__dict__)"
 ```
 
 ## 📄 License
