@@ -34,7 +34,6 @@ services:
       - ./credentials:/app/credentials:ro
       - ./src:/app/src
       - ./main.py:/app/main.py
-      - ./config:/app/config
       - ./logs:/app/logs
       - ./tests:/app/tests
     ports:
