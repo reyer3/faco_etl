@@ -1,224 +1,154 @@
-# 🎭 FACO ETL - Guía de Presentación
+# 🚀 FACO ETL - GUÍA RÁPIDA PARA PRESENTACIÓN
 
-## 📋 **Pre-Presentación (5 minutos antes)**
+## ⚡ Setup Inmediato (2 minutos)
 
-### ✅ **Checklist Rápido**
+### 1. **Clonar y configurar credenciales**:
 ```bash
-# 1. Verificar que todo funciona
-python validate_etl.py
+git clone https://github.com/reyer3/faco_etl.git
+cd faco_etl
 
-# 2. Ejecutar ETL en modo presentación
-python presentation_express.py
-
-# 3. Verificar logs
-ls -la logs/
+# Autenticarse con Google Cloud
+gcloud auth application-default login
 ```
 
-### 🔑 **Comandos de Emergencia**
+### 2. **Instalar dependencias**:
 ```bash
-# Si hay problemas de credenciales:
+pip install -r requirements.txt
+```
+
+### 3. **Configurar variables** (opcional):
+```bash
+cp .env.example .env
+# Editar .env si necesitas cambiar proyecto/dataset
+```
+
+## 🎯 **Para tu PRESENTACIÓN - Comandos Clave**
+
+### **Verificar conectividad rápida**:
+```bash
+python main.py --test-connectivity
+```
+
+### **Resumen ejecutivo para presentación**:
+```bash
+python main.py --quick-summary --mes 2025-06 --estado abierto
+```
+> ✨ **PERFECTO para presentaciones** - Te da métricas resumidas listas para mostrar
+
+### **Extraer y procesar datos reales**:
+```bash
+# Modo seguro (sin escribir a BigQuery)
+python main.py --dry-run --mes 2025-06 --estado abierto
+
+# Procesamiento completo
+python main.py --mes 2025-06 --estado abierto
+```
+
+## 📊 **Cambios Implementados para tu Presentación**
+
+### ✅ **Problemas Resueltos**:
+1. **Error de credenciales**: Ahora detecta automáticamente credenciales locales/Docker
+2. **Tabla calendario v4**: Actualizada con nuevos campos (`cant_cod_luna_unique`, etc.)
+3. **Queries centralizadas**: Todas las consultas están en `src/etl/queries.py`
+4. **Validación temporal**: Gestiones filtradas por período del calendario
+
+### ✅ **Nuevas Funcionalidades**:
+- `--quick-summary`: Métricas ejecutivas en 30 segundos
+- `--test-connectivity`: Validación rápida sin procesamiento
+- `--dry-run`: Procesamiento completo sin escribir a BigQuery
+- Logging estructurado con emojis para fácil lectura
+
+## 🎯 **Flujo Recomendado para tu Presentación**
+
+### **1. Validar Setup (30 segundos)**:
+```bash
+python main.py --test-connectivity
+```
+
+### **2. Obtener Métricas Ejecutivas (1 minuto)**:
+```bash
+python main.py --quick-summary --mes 2025-06 --estado abierto
+```
+
+### **3. Procesar Datos si Necesario (5-15 minutos)**:
+```bash
+python main.py --dry-run --mes 2025-06 --estado abierto
+```
+
+## 📈 **Output para Presentación**
+
+El comando `--quick-summary` te dará:
+
+```
+📈 DATOS DISPONIBLES PARA PRESENTACIÓN:
+==================================================
+📅 Período: 2025-06-01 → 2025-06-30
+📁 Archivos de cartera: 12
+⏰ Días de gestión disponibles: 30
+📊 Estado del período: ABIERTO
+
+👥 Total cuentas asignadas: 127,450
+🏢 Cuentas únicas: 125,330
+📱 Teléfonos únicos: 118,220
+
+📊 Distribución por tramo:
+   • AL VCTO: 45,230 (35.5%)
+   • ENTRE 4 Y 15D: 82,220 (64.5%)
+
+📊 Distribución por negocio:
+   • MOVIL: 78,450 (61.5%)
+   • FIJA: 48,890 (38.4%)
+   • MT: 110 (0.1%)
+==================================================
+✅ Datos listos para ETL y dashboards en Looker Studio
+```
+
+## 🚨 **Solución Rápida a Problemas Comunes**
+
+### **Error de credenciales**:
+```bash
+# Opción 1: Autenticación rápida
 gcloud auth application-default login
 
-# Si falla algún módulo:
-pip install -r requirements.txt
-
-# Si necesitas modo demo (sin BigQuery):
-python main.py --dry-run --debug
+# Opción 2: Ver ayuda detallada
+python main.py --setup-help
 ```
 
----
-
-## 🎯 **Estructura de Presentación (15-20 min)**
-
-### **1. Problema de Negocio (3 min)**
-**"Antes teníamos..."**
-- ❌ Análisis manual de 3M+ interacciones de cobranza
-- ❌ 5+ horas para generar reportes mensuales  
-- ❌ Inconsistencias entre equipos BOT vs HUMANO
-- ❌ Sin métricas de "primera vez contactado"
-- ❌ Comparativas período-anterior incorrectas (no consideraban días hábiles)
-
-**Mostrar:** Captura de pantalla de queries complejas de 100+ líneas
-
-### **2. Solución FACO ETL (5 min)**
-**"Ahora tenemos..."**
-- ✅ **Automatización completa** en <2 minutos
-- ✅ **Métricas estandarizadas** para toda la organización
-- ✅ **Lógica de negocio** incorporada (días hábiles Perú, primera vez, temporal)
-- ✅ **Optimización Looker Studio** (particionado + clustering)
-
-**Demo en vivo:**
+### **Sin datos para el período**:
 ```bash
-# Ejecutar en terminal:
-python presentation_express.py 2025-06 abierto
+# Probar diferentes meses/estados
+python main.py --quick-summary --mes 2025-05 --estado finalizado
+python main.py --quick-summary --mes 2025-06 --estado abierto
 ```
 
-**Mostrar en pantalla:**
-- Logs en tiempo real con emojis
-- Métricas de procesamiento (165K cuentas/minuto)
-- Tablas generadas automáticamente
-
-### **3. Valor Técnico (4 min)**
-**"Arquitectura robusta..."**
-
-#### **ETL Pipeline:**
-```
-📊 BigQuery Raw (3M+ records)
-    ↓ Extracción inteligente
-🔄 Python Business Logic  
-    ↓ Agregación por dimensiones
-📊 BigQuery Optimized (165K accounts)
-    ↓ Particionado + Clustering
-📈 Looker Studio (sub-segundo)
-```
-
-#### **Innovaciones Clave:**
-1. **Validación Temporal**: Solo gestiones dentro período vigencia
-2. **Días Hábiles**: Calendario Perú + comparativas inteligentes  
-3. **Primera Vez**: Tracking granular cliente-dimensión
-4. **Diferenciación**: Acciones totales vs clientes únicos
-5. **Auto-Optimización**: Tablas listas para Looker Studio
-
-**Demo:** Mostrar código de `business_days.py` o `transformer.py`
-
-### **4. Impacto de Negocio (3 min)**
-**"Resultados medibles..."**
-
-#### **Eficiencia Operativa:**
-- **De 5 horas → 2 minutos** (150x más rápido)
-- **De manual → automatizado** (0 errores humanos)
-- **De inconsistente → estandarizado** (mismas métricas para todos)
-
-#### **Nuevas Capacidades:**
-- **Análisis de primera vez**: Identificar nuevos clientes contactados
-- **Comparativas inteligentes**: Mismo día hábil mes anterior
-- **Performance por canal**: BOT vs HUMANO con métricas justas
-- **Cobertura de cartera**: % cuentas gestionadas vs asignadas
-
-**Mostrar:** Métricas del archivo `logs/presentation_metrics.json`
-
-### **5. Próximos Pasos (2 min)**
-**"Escalabilidad y roadmap..."**
-
-#### **Corto Plazo (1-2 meses):**
-- Dashboards Looker Studio en producción
-- Alertas automáticas de performance
-- Integración con sistemas de campañas
-
-#### **Mediano Plazo (3-6 meses):**
-- ML para predicción de contactabilidad
-- API REST para consumo en tiempo real
-- Extensión a otras líneas de negocio
-
----
-
-## 🗣️ **Frases Clave para la Presentación**
-
-### **Apertura Impactante:**
-*"Tenemos 3 millones de interacciones de cobranza mensuales. Antes nos tomaba 5 horas analizarlas. Ahora: 2 minutos."*
-
-### **Valor Técnico:**
-*"No es solo automatización. Es lógica de negocio incorporada: días hábiles de Perú, tracking de primera vez, validación temporal automática."*
-
-### **Impacto Financiero:**
-*"De 165 mil cuentas asignadas, ahora sabemos exactamente cuántas son primera vez, cuál canal es más efectivo, y cómo comparamos con el mismo día hábil del mes anterior."*
-
-### **Cierre Potente:**
-*"FACO ETL no solo procesa datos. Convierte 3 millones de interacciones en decisiones de negocio."*
-
----
-
-## 🎬 **Demo Script Detallado**
-
-### **Minuto 1-2: Mostrar el Problema**
-1. Abrir BigQuery console
-2. Mostrar tabla `mibotair_*` con 2M+ registros
-3. Comentar: *"Esto son solo las gestiones humanas. Hay que cruzar con BOT, calendario, pagos..."*
-
-### **Minuto 3-7: Demo en Vivo**
+### **Debug detallado**:
 ```bash
-# Terminal en pantalla grande:
-python presentation_express.py 2025-06 abierto
+python main.py --debug --quick-summary --mes 2025-06
 ```
 
-**Narrar mientras ejecuta:**
-- "Extrayendo 165K cuentas asignadas..."
-- "Validando gestiones dentro del período vigencia..."
-- "Calculando días hábiles con calendario de Perú..."
-- "Diferenciando primera vez vs recurrentes..."
-- "Optimizando tablas para Looker Studio..."
+## 📋 **Tabla calendario v4 - Nuevos Campos**
 
-### **Minuto 8-10: Mostrar Resultados**
-1. Abrir BigQuery console
-2. Mostrar tabla `dash_cobranza_agregada` generada
-3. Explicar particionado y clustering
-4. Mostrar algunos registros de ejemplo
-
-### **Minuto 11-12: Métricas en Tiempo Real**
-```bash
-# Mostrar archivo generado:
-cat logs/presentation_metrics.json
+Ahora usando:
+```sql
+SELECT 
+    ARCHIVO,
+    cant_cod_luna_unique,      -- Cantidad de cod_lunas únicos 
+    cant_registros_archivo,    -- Total registros en archivo
+    FECHA_ASIGNACION,
+    FECHA_TRANDEUDA, 
+    FECHA_CIERRE,
+    VENCIMIENTO,
+    DIAS_GESTION,
+    DIAS_PARA_CIERRE,
+    ESTADO
+FROM `BI_USA.dash_P3fV4dWNeMkN5RJMhV8e_calendario_v4`
 ```
 
-**Destacar:**
-- Records processed: 165,000+
-- Execution time: <2 minutes  
-- Tables optimized: 4
-- Ready for Looker Studio: ✅
+## 🎉 **Para tu Presentación**
 
----
+1. **Ejecutar**: `python main.py --quick-summary --mes 2025-06`
+2. **Copiar output** para slides 
+3. **Mostrar**: Volúmenes, distribuciones, estado de datos
+4. **Demostrar**: ETL funcionando con `--dry-run`
 
-## 🔧 **Troubleshooting Durante Presentación**
-
-### **Si falla la conexión a BigQuery:**
-```bash
-# Cambiar a modo demo:
-python main.py --dry-run --debug --mes 2025-06 --estado abierto
-```
-*Comentar:* "Esto simula el procesamiento real que acabamos de ver..."
-
-### **Si hay error de importación:**
-```bash
-# Verificar rápidamente:
-python validate_etl.py
-```
-*Comentar:* "Tenemos validaciones automáticas que nos alertan de cualquier problema..."
-
-### **Si la demo va muy rápido:**
-```bash
-# Mostrar logs detallados:
-python main.py --debug --mes 2025-06 --estado abierto
-```
-
----
-
-## 🎯 **Mensajes Clave por Audiencia**
-
-### **Para Ejecutivos:**
-- **ROI**: De 5 horas manuales → 2 minutos automatizados
-- **Escalabilidad**: Capacidad de procesar 30x más cuentas sin costo adicional
-- **Precisión**: 0% errores humanos en agregaciones
-
-### **Para Técnicos:**
-- **Arquitectura**: Python + BigQuery + Looker Studio optimizado
-- **Performance**: 165K cuentas/minuto de throughput
-- **Calidad**: Validaciones automáticas y logging estructurado
-
-### **Para Analistas:**
-- **Nuevas Métricas**: Primera vez, días hábiles, comparativas inteligentes
-- **Consistencia**: Mismos KPIs para todos los equipos
-- **Flexibilidad**: Drag-and-drop en Looker Studio
-
----
-
-## 📱 **Backup Plans**
-
-### **Plan A (Ideal):** Demo en vivo con BigQuery real
-### **Plan B (Conexión):** Demo con `--dry-run` + mostrar logs previos
-### **Plan C (Técnico):** Mostrar código + arquitectura + métricas guardadas
-
----
-
-**🎭 ¡Éxito en tu presentación!** 
-
-*Remember: Confidence is key. You built something real that solves real business problems.*
+¡**Listo para presentación en minutos**! 🚀
