@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from google.cloud import bigquery
-from google.cloud.bigquery import SchemaField, TimePartitioning, Clustering
+from google.cloud.bigquery import SchemaField, TimePartitioning
 from loguru import logger
 
 from core.config import ETLConfig
@@ -389,14 +389,9 @@ DIMENSIONES:
         """Apply additional optimizations specifically for Looker Studio performance"""
         logger.info("⚡ Aplicando optimizaciones para Looker Studio")
         
-        optimizations = [
-            "ALTER TABLE `{table_id}` SET OPTIONS (description='{description}', labels=[('source', 'faco_etl'), ('optimized_for', 'looker_studio')])",
-        ]
-        
         for table_name in self.config.output_tables:
             full_table_name = self.config.output_tables[table_name]
             table_id = f"{self.dataset}.{full_table_name}"
-            table_config = self.table_configs.get(table_name, {})
             
             try:
                 # Apply table labels
