@@ -22,7 +22,7 @@ class CobranzaTransformer:
         self.config = config
         self.business_days = business_days
         
-        # Define the aggregation dimensions as specified
+        # Define the aggregation dimensions as specified (FIXED: removed duplicates)
         self.aggregation_dimensions = [
             'FECHA_SERVICIO',
             'CARTERA', 
@@ -38,8 +38,7 @@ class CobranzaTransformer:
             'NIVEL_1',
             'NIVEL_2', 
             'NIVEL_3',
-            'SERVICIO',
-            'CARTERA'
+            'SERVICIO'
         ]
         
         logger.info(f"🔄 Transformer inicializado con {len(self.aggregation_dimensions)} dimensiones de agregación")
@@ -59,7 +58,9 @@ class CobranzaTransformer:
         # Create derived dimensions
         df_base['CARTERA'] = df_base['archivo'].apply(self._extract_cartera_type)
         df_base['SERVICIO'] = df_base['negocio']
-        df_base['CARTERA'] = self._create_management_segment(df_base)
+        
+        # FIXED: Replace problematic management segment creation
+        df_base['CARTERA'] = self._create_management_segment_safe(df_base)
         
         # Set management period dates
         df_base['FECHA_INICIO_GESTION'] = df_base['FECHA_ASIGNACION']
@@ -73,7 +74,10 @@ class CobranzaTransformer:
     
     def _extract_cartera_type(self, filename: str) -> str:
         """Extract portfolio type from filename"""
-        filename_upper = filename.upper()
+        if pd.isna(filename):
+            return 'OTRAS'
+            
+        filename_upper = str(filename).upper()
         
         if 'TEMPRANA' in filename_upper:
             return 'TEMPRANA'
@@ -86,27 +90,35 @@ class CobranzaTransformer:
         else:
             return 'OTRAS'
     
-    def _create_management_segment(self, df: pd.DataFrame) -> pd.Series:
-        """Create management segment combining tramo_gestion and fraccionamiento"""
+    def _create_management_segment_safe(self, df: pd.DataFrame) -> pd.Series:
+        """Create management segment combining tramo_gestion and fraccionamiento - SAFE VERSION"""
         segments = []
         for _, row in df.iterrows():
-            segment = row['tramo_gestion']
+            # FIXED: Safe string concatenation with None checks
+            segment = str(row.get('tramo_gestion', '')) if pd.notna(row.get('tramo_gestion')) else ''
+            
             if row.get('fraccionamiento') == 'SI':
                 segment += ' - FRACCIONADO'
-            if row.get('cuota_fracc_act') and pd.notna(row['cuota_fracc_act']):
-                segment += f" - CUOTA_{row['cuota_fracc_act']}"
-            segments.append(segment)
+            
+            cuota_fracc = row.get('cuota_fracc_act')
+            if cuota_fracc and pd.notna(cuota_fracc) and str(cuota_fracc).strip():
+                segment += f" - CUOTA_{cuota_fracc}"
+                
+            segments.append(segment if segment else 'NO_ESPECIFICADO')
         return pd.Series(segments, index=df.index)
     
     def _calculate_recovery_objective(self, tramo_gestion: str) -> float:
         """Calculate recovery objective based on management segment"""
+        if pd.isna(tramo_gestion):
+            return 0.20
+            
         objectives = {
             'AL VCTO': 0.15,        # 15% for at maturity
             'ENTRE 4 Y 15D': 0.25,  # 25% for early collection
             'TEMPRANA': 0.20,       # 20% for early
             'TARDIA': 0.30          # 30% for late
         }
-        return objectives.get(tramo_gestion, 0.20)  # Default 20%
+        return objectives.get(str(tramo_gestion), 0.20)  # Default 20%
     
     def process_gestiones_with_first_time_tracking(self, df_gestiones: pd.DataFrame, 
                                                   df_base: pd.DataFrame,
@@ -134,16 +146,16 @@ class CobranzaTransformer:
         
         if canal == 'BOT':
             df_enriched['OPERADOR'] = 'SISTEMA_BOT'
-            df_enriched['GRUPO_RESPUESTA'] = df_enriched['management']
-            df_enriched['GLOSA_RESPUESTA'] = df_enriched['management']
-            df_enriched['NIVEL_1'] = df_enriched['management']
+            df_enriched['GRUPO_RESPUESTA'] = df_enriched['management'].fillna('NO_DISPONIBLE')
+            df_enriched['GLOSA_RESPUESTA'] = df_enriched['management'].fillna('NO_DISPONIBLE')
+            df_enriched['NIVEL_1'] = df_enriched['management'].fillna('NO_DISPONIBLE')
             df_enriched['NIVEL_2'] = ''
             df_enriched['NIVEL_3'] = ''
             df_enriched['monto_compromiso'] = 0  # Bots don't handle money commitments
         else:  # HUMANO
             df_enriched['OPERADOR'] = df_enriched['nombre_agente'].fillna('SIN_AGENTE')
-            df_enriched['GRUPO_RESPUESTA'] = df_enriched['management']
-            df_enriched['GLOSA_RESPUESTA'] = self._create_detailed_response(df_enriched)
+            df_enriched['GRUPO_RESPUESTA'] = df_enriched['management'].fillna('NO_DISPONIBLE')
+            df_enriched['GLOSA_RESPUESTA'] = self._create_detailed_response_safe(df_enriched)
             df_enriched['NIVEL_1'] = df_enriched['n1'].fillna('')
             df_enriched['NIVEL_2'] = df_enriched['n2'].fillna('')
             df_enriched['NIVEL_3'] = df_enriched['n3'].fillna('')
@@ -162,15 +174,24 @@ class CobranzaTransformer:
         logger.info(f"✅ Gestiones {canal} procesadas: {len(df_enriched)} interacciones")
         return df_enriched
     
-    def _create_detailed_response(self, df: pd.DataFrame) -> pd.Series:
-        """Create detailed response combining n1, n2, n3 levels"""
+    def _create_detailed_response_safe(self, df: pd.DataFrame) -> pd.Series:
+        """Create detailed response combining n1, n2, n3 levels - SAFE VERSION"""
         responses = []
         for _, row in df.iterrows():
             parts = []
             for level in ['n1', 'n2', 'n3']:
-                if pd.notna(row.get(level)) and row[level].strip():
-                    parts.append(row[level].strip())
-            responses.append(' - '.join(parts) if parts else row.get('management', ''))
+                value = row.get(level)
+                if pd.notna(value) and str(value).strip():
+                    parts.append(str(value).strip())
+            
+            if parts:
+                response = ' - '.join(parts)
+            else:
+                # Fallback to management field
+                management = row.get('management')
+                response = str(management) if pd.notna(management) else 'NO_DISPONIBLE'
+            
+            responses.append(response)
         return pd.Series(responses, index=df.index)
     
     def _mark_first_time_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -491,7 +512,7 @@ class CobranzaTransformer:
         logger.info("📊 Creando métricas base de cartera")
         
         # Aggregate by portfolio dimensions
-        portfolio_dims = ['CARTERA', 'FECHA_ASIGNACION', 'SERVICIO', 'CARTERA']
+        portfolio_dims = ['CARTERA', 'FECHA_ASIGNACION', 'SERVICIO']
         
         df_portfolio = df_base.groupby(portfolio_dims).agg({
             'cod_luna': 'count',
