@@ -60,6 +60,23 @@ Homepage = "https://github.com/reyer3/faco_etl"
 Repository = "https://github.com/reyer3/faco_etl"
 Issues = "https://github.com/reyer3/faco_etl/issues"
 
+# Fix for hatchling - specify where packages are located
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+include = [
+    "main.py",
+    "src/**/*.py",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/main.py",
+    "/requirements.txt",
+    "/README.md",
+    "/LICENSE",
+]
+
 [tool.black]
 line-length = 88
 target-version = ['py39', 'py310', 'py311', 'py312', 'py313']
