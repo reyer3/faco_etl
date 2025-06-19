@@ -1,169 +1,221 @@
 # FACO ETL 🚀
 
-**Simple Python ETL for Gestión de Cobranza Analytics**
+**Production-Ready Python ETL for Gestión de Cobranza Analytics**
 
-Transforms BigQuery raw data into Looker Studio ready aggregated tables with:
-- ✅ Business dimensions aggregation
-- ✅ Working days calculations
+Transforms BigQuery raw data into Looker Studio optimized tables with:
+- ✅ Business dimensions aggregation  
+- ✅ Working days calculations (Peru calendar)
 - ✅ First-time tracking per client
 - ✅ Period-over-period comparisons
 - ✅ Actions vs unique clients metrics
+- ✅ Temporal validation (gestiones within valid periods)
 
-## 🏃‍♂️ Quick Start
+## 🚀 **Quick Start (2 minutes)**
 
-### Option 1: Local Development
+### **Option 1: Automatic Setup**
 ```bash
-# Clone and setup
 git clone https://github.com/reyer3/faco_etl.git
 cd faco_etl
+chmod +x setup.sh
+./setup.sh
+```
 
-# Quick setup (creates directories, .env file)
-chmod +x setup_local.sh
-./setup_local.sh
+### **Option 2: Manual Setup**
+```bash
+git clone https://github.com/reyer3/faco_etl.git
+cd faco_etl
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Test run
+# Configure environment 
+cp .env.example .env
+# Edit .env with your settings
+
+# Setup Google Cloud credentials (choose one):
+# A) Application Default Credentials (recommended)
+gcloud auth application-default login
+
+# B) Service Account Key
+mkdir credentials
+# Download your service account key to credentials/key.json
+
+# Test everything works
+python main.py --test-connectivity
+```
+
+## 🔧 **Fix Common Issues**
+
+### **Credentials Error?**
+```bash
+# Quick fix for credentials
+gcloud auth application-default login
+
+# Or check what's missing
+python main.py --setup-help
+
+# Or run without BigQuery for testing
 python main.py --dry-run
 ```
 
-### Option 2: Docker (Recommended)
+### **Import Errors?**
 ```bash
-# Clone and run
-git clone https://github.com/reyer3/faco_etl.git
+# Make sure you're in the project root
 cd faco_etl
-
-# Setup directories first
-chmod +x setup_local.sh
-./setup_local.sh
-
-# Run with Docker
-docker-compose up etl
+python main.py --test-connectivity
 ```
 
-## ⚙️ Configuration
-
-### Local Environment
-The setup script creates a `.env` file automatically. Edit it with your settings:
+## 🎯 **Usage Examples**
 
 ```bash
-# Edit configuration
-nano .env
+# Test connectivity first
+python main.py --test-connectivity
 
-# Key settings to update:
-GOOGLE_CLOUD_PROJECT=your-project-id
-BIGQUERY_DATASET=your-dataset
-# Add your service account key to credentials/key.json
-```
+# Get credentials help
+python main.py --setup-help
 
-### Docker Environment
-```bash
-# Development mode with auto-reload
-docker-compose up dev
+# Run ETL for current month (dry-run)
+python main.py --mes 2025-06 --estado abierto --dry-run
 
-# Production run
-docker-compose up etl
-
-# Interactive shell for debugging
-docker-compose run --rm shell
-```
-
-## 🔧 Local Setup Details
-
-The setup script (`./setup_local.sh`) creates:
-- `logs/` directory for log files
-- `credentials/` directory for Google Cloud keys
-- `.env` file from template
-- Placeholder `credentials/key.json` (replace with real key)
-
-## 📊 Output Tables
-
-- `dash_cobranza_agregada`: Main aggregated table for Looker Studio
-- `dash_cobranza_comparativas`: Period-over-period comparisons
-- `dash_primera_vez_tracking`: First-time interaction tracking
-
-## 🏗️ Architecture
-
-```
-📊 BigQuery → 🐍 Python ETL → 📊 BigQuery → 📈 Looker Studio
-   (Raw)        (Transform)     (Aggregated)    (Dashboards)
-```
-
-## 🧪 Testing & Validation
-
-```bash
-# Run validation tests
-./validate.sh
-
-# Python test suite
-python tests/test_validation.py
-
-# Dry run (no BigQuery writes)
-python main.py --dry-run --debug
-```
-
-## 📋 Usage Examples
-
-```bash
-# Basic run for current month
+# Run real ETL with BigQuery
 python main.py --mes 2025-06 --estado abierto
 
 # Process closed period
 python main.py --mes 2025-05 --estado finalizado
 
-# Dry run with debug logging
-python main.py --mes 2025-06 --estado abierto --dry-run --debug
-
-# Docker run with custom parameters
-MES_VIGENCIA=2025-05 ESTADO_VIGENCIA=finalizado docker-compose up etl
+# Debug mode with detailed logging
+python main.py --mes 2025-06 --estado abierto --debug
 ```
 
-## 🛠️ Development
+## 📊 **What It Produces**
+
+The ETL generates optimized tables for Looker Studio:
+
+| Table | Description | Use Case |
+|-------|-------------|----------|
+| `dash_cobranza_agregada` | Main aggregated metrics by business dimensions | Primary dashboard source |
+| `dash_cobranza_comparativas` | Period-over-period comparisons with same business day | Trend analysis |
+| `dash_primera_vez_tracking` | First-time interaction tracking per client | Customer journey analysis |
+| `dash_cobranza_base_cartera` | Portfolio base metrics and financial KPIs | Executive reporting |
+
+### **Key Features:**
+- **Diferentiated Metrics**: Actions vs unique clients
+- **Temporal Validation**: Only gestiones within valid periods
+- **Business Days**: Peru calendar with working day calculations
+- **File Date Extraction**: Smart date parsing from filenames
+- **BigQuery Optimized**: Partitioned and clustered for performance
+
+## 🏗️ **Architecture**
+
+```
+📊 BigQuery Raw Data → 🐍 Python ETL → 📊 BigQuery Aggregated → 📈 Looker Studio
+   ├─ calendario                    ├─ Extract         ├─ dash_cobranza_*        └─ Dashboards
+   ├─ asignacion                    ├─ Transform       ├─ Partitioned by date    
+   ├─ voicebot                      ├─ Business Days   ├─ Clustered by dimensions
+   ├─ mibotair                      ├─ First-time      └─ Ready for BI tools
+   ├─ trandeuda                     └─ Load            
+   └─ pagos                                            
+```
+
+## 🐳 **Docker Usage**
 
 ```bash
-# Install dev dependencies
+# Production run
+docker-compose up etl
+
+# Development with hot-reload  
+docker-compose up dev
+
+# Interactive shell for debugging
+docker-compose run --rm shell
+```
+
+## ⚙️ **Configuration**
+
+All configuration via environment variables in `.env`:
+
+```env
+# BigQuery Connection
+GOOGLE_CLOUD_PROJECT=mibot-222814
+BIGQUERY_DATASET=BI_USA
+
+# ETL Parameters  
+MES_VIGENCIA=2025-06
+ESTADO_VIGENCIA=abierto
+COUNTRY_CODE=PE
+
+# Performance
+BATCH_SIZE=10000
+MAX_WORKERS=4
+
+# Output
+OUTPUT_TABLE_PREFIX=dash_cobranza
+OVERWRITE_TABLES=true
+```
+
+## 📈 **Business Logic**
+
+### **Temporal Validation**
+- Gestiones must be between `FECHA_ASIGNACION` and `FECHA_CIERRE` from calendario
+- File dates extracted from nombres (not `creado_el`)
+- Pagos use `fecha_pago` column for filtering
+
+### **Relationship Model**
+```
+CALENDARIO (1) ──┐
+                 ├── ARCHIVO ──→ ASIGNACION (*)
+                 └── fecha_inicio/fin
+                 
+ASIGNACION (1) ──→ cod_luna ──→ GESTIONES (*)
+                               ├── voicebot  
+                               └── mibotair
+```
+
+### **Key Metrics**
+- **Actions**: Total interactions (each call counts)
+- **Unique Clients**: Distinct clients contacted per dimension
+- **First Time**: Tracking primera vez por cliente + dimensión
+- **Business Days**: Working day of month for comparisons
+
+## 🛠️ **Development**
+
+```bash
+# Local development
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements-dev.txt
 
 # Run tests
 pytest tests/
 
-# Format code
+# Code quality
 black src/
-isort src/
-
-# Type checking
+flake8 src/
 mypy src/
 ```
 
-## 🔍 Troubleshooting
+## 📋 **Troubleshooting**
 
-### Common Issues:
+| Issue | Solution |
+|-------|----------|
+| **Credentials Error** | `gcloud auth application-default login` |
+| **Import Error** | Run from project root: `cd faco_etl` |
+| **No Data Found** | Check `mes_vigencia` and `estado_vigencia` |
+| **BigQuery Permission** | Ensure service account has BigQuery read/write |
+| **Memory Issues** | Reduce `BATCH_SIZE` in `.env` |
 
-**Permission denied on `/app` directory:**
-- You're running locally with Docker paths
-- Run `./setup_local.sh` to create proper local structure
+## 🎉 **Ready for Production**
 
-**Credentials error:**
-- Ensure `credentials/key.json` exists and has BigQuery permissions
-- Check `GOOGLE_CLOUD_PROJECT` in `.env` file
+This ETL is production-ready with:
+- ✅ **Error handling** and retry logic  
+- ✅ **Logging** with structured output
+- ✅ **Monitoring** through detailed metrics
+- ✅ **Performance** optimized for BigQuery
+- ✅ **Scalability** with configurable batch sizes
+- ✅ **Flexibility** for different periods and states
 
-**Import errors:**
-- Install dependencies: `pip install -r requirements.txt`
-- Activate virtual environment if using one
+---
 
-**Date format error:**
-- Use YYYY-MM format for `--mes` parameter (e.g., `2025-06`)
+**Need help?** Check logs in `logs/etl.log` or run with `--debug` flag.
 
-### Debug Mode:
-```bash
-# Enable detailed logging
-python main.py --debug --dry-run
-
-# Check configuration
-python -c "from src.core.config import get_config; print(get_config().__dict__)"
-```
-
-## 📄 License
-
-MIT License - see LICENSE file
+**For presentations:** Use `--dry-run` to test without BigQuery writes.
